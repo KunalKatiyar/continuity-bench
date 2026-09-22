@@ -131,6 +131,17 @@ MAX_ARTICLED_SHARE = 0.1
 MIN_STANDALONE_SHARE = 0.3
 MIN_LOCAL_MENTIONS = 3
 MIN_NOVEL_MENTIONS = 20
+MAX_FIRST_PERSON_SHARE = 0.15
+
+QUOTED_SPAN = re.compile("[\u201c][^\u201d]*[\u201d]|\"[^\"]*\"", re.S)
+PERSON_INVARIANT_VERBS = (
+    "had|was|could|would|should|might|must|went|came|saw|knew|felt|thought|took|stood"
+    "|sat|began|heard|looked|turned|walked|waited|watched|remembered|understood"
+)
+THIRD_PERSON_NARRATION = re.compile(
+    r"\b(?P<pron>he|she)\s+(?:" + PERSON_INVARIANT_VERBS + r")\b", re.I
+)
+FIRST_PERSON_NARRATION = re.compile(r"\bI\s+(?:" + PERSON_INVARIANT_VERBS + r")\b")
 
 NAME_RE = re.compile(r"\b[A-Z][a-z]{2,}\b")
 QUOTE_ENDINGS = '.!?"”’\''
@@ -349,6 +360,31 @@ def candidates_trait_flip(text, rng):
                 long_range_ok=bool(NAME_OWNER.match(m.group("owner"))),
             )
 
+
+def quoted_spans(text):
+    """Character ranges covered by dialogue, so narration can be told from speech."""
+    return [(m.start(), m.end()) for m in QUOTED_SPAN.finditer(text)]
+
+
+def outside_quotes(spans, position):
+    """True when position is narration rather than something a character says."""
+    return not any(start <= position < end for start, end in spans)
+
+
+# POV slip is deliberately NOT a rule here, and that is a measured decision rather
+# than an omission. Injecting one by switching a narrated "he/she <verb>" to
+# "I <verb>" in a third-person novel yields plenty - 17,258 sites across 14 novels,
+# 180 items built - but the `narration_person` attack in evaluate.py detects 100% of
+# them with five lines of regex and no model at all. The injected "I" is the only
+# first-person narration token in an otherwise pure third-person passage, so it is a
+# lexical outlier, not a contradiction that has to be reasoned about. Matching the
+# clean controls on that statistic is not possible either: third-person novels sit at
+# a 0.003 first-person narration ratio, so passages that already contain a narrated
+# "I" barely exist.
+#
+# The useful conclusion for the project: a POV slip is surface-detectable and belongs
+# in a linter, not in a benchmark meant to measure state tracking. The spec lists it
+# as one of three candidate error types; this is the evidence for dropping it.
 
 GLOBAL_RULES = (candidates_timeline, candidates_trait_flip)
 

@@ -264,6 +264,27 @@ def trait_disagreement(item):
     return Prediction(has_error=False)
 
 
+@predictor("narration_person")
+def narration_person(item):
+    """Attack: flag a passage whose narration mixes third-person and first-person.
+
+    pov_slip works by putting "I <verb>" into third-person narration, and this is the
+    one-line test for exactly that, so it is the honest measure of whether that error
+    type is trivial. Run it before believing a pov_slip result.
+    """
+    text = item["text"]
+    spans = bench.quoted_spans(text)
+    third = [m for m in bench.THIRD_PERSON_NARRATION.finditer(text) if bench.outside_quotes(spans, m.start())]
+    first = [m for m in bench.FIRST_PERSON_NARRATION.finditer(text) if bench.outside_quotes(spans, m.start())]
+    if not third or not first:
+        return Prediction(has_error=False)
+    return Prediction(
+        has_error=True,
+        paragraph_index=_paragraph_at(text, first[0].start()),
+        note=f"{len(first)} first-person against {len(third)} third-person narration verbs",
+    )
+
+
 class CorpusPriorAttack:
     """Attack: pool every passage of a novel, then flag names that are locally rare but globally common.
 

@@ -65,6 +65,7 @@ zero-cost predictor, including two that model an adversary who downloaded the da
 | `singleton_name` | −0.011 | flags a passage holding a name mentioned once beside frequent names |
 | `trait_disagreement` | +0.011 | flags two different colours describing one feature |
 | `rarest_name` / `always_error` | +0.000 | constant strategies; F1 0.667, discrimination zero |
+| `narration_person` | +0.000 | flags narration mixing first and third person (see the POV note below) |
 | `pair_leak` *(diagnostic)* | +0.121, **localization 1.000** | diffs the two halves of a matched pair |
 | `pair_diff_targeted` *(diagnostic)* | **+0.699**, FPR 0.000 | diffs the pair, then tests only the token that changed |
 
@@ -146,6 +147,32 @@ type plus a long tail. The facts regex can verify are not repeated often enough 
 prose. Balanced volume needs an LLM injector that *writes* the contradiction — that is
 step 1b, and it is a measured conclusion rather than a guess.
 
+## Why there is no POV-slip error type
+
+The brief lists POV/tense slip as one of three candidate error types. It is
+implementable and high-yield: switching a narrated `he/she <verb>` to `I <verb>` in a
+third-person novel gives **17,258 injection sites across 14 novels**, and a build
+produced 180 items — which would have taken the corpus from 98% one error type to a
+59/40 split across two.
+
+**It was dropped because a five-line regex detects 100% of them.** The
+`narration_person` attack finds every injected item (recall 1.000) and pushed the
+overall free-heuristic J from +0.066 to **+0.350**, past the leakage threshold. The
+reason is structural: the injected "I" is the only first-person narration token in an
+otherwise pure third-person passage, so it is a lexical outlier rather than a
+contradiction anything has to reason about. Matching the clean controls on that
+statistic is not available either — third-person novels sit at a 0.003 narrated-"I"
+ratio, so passages that already contain one barely exist.
+
+With the rule removed, `narration_person` collapses to J +0.000 (recall 0.456 against
+FPR 0.456 — noise), confirming it was detecting only the artifact.
+
+The conclusion is worth more than the 180 items: **a POV slip is surface-detectable
+and belongs in a linter, not in a benchmark meant to measure state tracking.** The
+error types that need a story-state model are the ones where the contradicted fact is
+elsewhere in the text. That is an argument for the Phase 2 premise, and an argument
+against one third of the brief's error-type list.
+
 ## Running the paid baselines
 
 Needs credentials: `ANTHROPIC_API_KEY`, or an `ant auth login` profile the SDK picks up
@@ -200,7 +227,8 @@ rate.
   character, and refuses an intruder who is an alias of the victim or of anyone in the
   scene. Without the first, surrounding pronouns disagree and the item is solvable by
   grammar; without the second, `Sawyer` replaces `Tom` and the "error" is not one.
-- **Only three error types.** POV/tense slips from the brief are not implemented.
+- **Only two error types have meaningful volume**, and POV slip was tried and rejected
+  on evidence — see below.
 
 ## Build order
 
