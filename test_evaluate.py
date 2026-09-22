@@ -388,6 +388,63 @@ def test_skipped_items_still_count_against_recall():
     assert predictor.api_failures == 2
 
 
+def test_local_predictor_is_free_and_needs_no_key():
+    predictor = evaluate.LocalPredictor("llama3.1:8b")
+    assert predictor.needs_key is False
+    assert predictor.has_rates() is True
+    assert predictor.price(1_000_000, 1_000_000) == 0.0
+    assert predictor.predictor_name == "local_llama3.1:8b_high"
+
+
+def test_local_predictor_reuses_the_shared_prompt_and_schema():
+    """A local baseline is only comparable if it is asked the same question."""
+    local = evaluate.LocalPredictor("llama3.1:8b")
+    hosted = evaluate.OpenAIPredictor("gpt-4.1")
+    item = _item("p1", True, "r", text="a para here\n\nb para here")
+    assert local.build_prompt(item) == hosted.build_prompt(item)
+    assert local.build_prompt(item) == evaluate.AnthropicPredictor("claude-opus-5").build_prompt(item)
+
+
+def test_local_predictor_points_at_ollama_by_default_and_accepts_an_override():
+    assert evaluate.LocalPredictor("llama3.1:8b").base_url == "http://localhost:11434/v1"
+    custom = evaluate.LocalPredictor("llama3.1:8b", base_url="http://gpu-box:8000/v1")
+    assert custom.base_url == "http://gpu-box:8000/v1"
+
+
+def test_a_free_local_run_does_not_create_a_cost_axis():
+    """A local run costs no API money, so the leaderboard must stay on bars."""
+    import build_site
+
+    rows = [
+        {"predictor": "local_llama3.1:8b_high", "kind": "model", "cost_usd": 0.0,
+         "youden_j": 0.2, "f1": 0.5, "items": 40, "recall": 0.5,
+         "false_positive_rate": 0.3, "localization": 0.1, "precision": 0.5,
+         "novels": 5, "corpus": "c.jsonl"},
+    ]
+    assert build_site.has_paid_run(rows) is False
+
+
+def test_the_attack_suite_never_includes_a_model():
+    """`attack` must stay instant and free.
+
+    Filtering on needs_key was not enough: a local model needs no key, so registering
+    one put a 58-minute llama run inside the "zero-cost heuristic" suite. The filter is
+    on kind.
+    """
+    for name in ("llm", "openai", "local"):
+        assert evaluate.PREDICTORS[name].kind == "model"
+        assert evaluate.PREDICTORS[name].kind not in evaluate.HEURISTIC_KINDS
+    heuristics = [n for n, p in evaluate.PREDICTORS.items() if p.kind in evaluate.HEURISTIC_KINDS]
+    assert "local" not in heuristics
+    assert {"always_clean", "corpus_prior", "pair_leak"} <= set(heuristics)
+
+
+def test_every_heuristic_is_genuinely_free():
+    for name, predict in evaluate.PREDICTORS.items():
+        if predict.kind in evaluate.HEURISTIC_KINDS:
+            assert predict.needs_key is False, name
+
+
 if __name__ == "__main__":
     import _selftest
 

@@ -220,6 +220,17 @@ def bars(rows, y_key, y_label, floor=None):
     return "".join(parts)
 
 
+def ci95(row):
+    """The J interval as text, flagged when it spans zero and so proves nothing."""
+    interval = row.get("youden_j_ci95")
+    if not interval:
+        return "&mdash;"
+    lo, hi = interval
+    spans_zero = not row.get("youden_j_significant", lo > 0 or hi < 0)
+    text = f"{lo:+.3f} to {hi:+.3f}"
+    return f"{text} &#8225;" if spans_zero else text
+
+
 def per_passage(row):
     """Cost of one passage for this run."""
     return row["cost_usd"] / row["items"] if row["items"] else 0.0
@@ -252,7 +263,7 @@ def legend(rows):
 
 def table(rows):
     head = (
-        "<thead><tr><th>predictor</th><th>J</th><th>F1</th>"
+        "<thead><tr><th>predictor</th><th>J</th><th>J 95% CI</th><th>F1</th>"
         "<th>precision</th><th>recall</th><th>FPR</th><th>localization</th>"
         "<th>$/passage</th><th>items</th></tr></thead>"
     )
@@ -262,6 +273,7 @@ def table(rows):
             "<tr>"
             f'<td class="name">{esc(row["predictor"])}</td>'
             f'<td class="num strong">{row["youden_j"]:+.3f}</td>'
+            + f'<td class="num ci">{ci95(row)}</td>'
             f'<td class="num">{row["f1"]:.3f}</td>'
             f'<td class="num">{row["precision"]:.3f}</td>'
             f'<td class="num">{row["recall"]:.3f}</td>'
@@ -339,6 +351,7 @@ th, td { padding: 7px 10px; border-bottom: 1px solid var(--grid); text-align: le
 th { color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
 td.strong { font-weight: 600; color: var(--ink); }
+td.ci { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
 td.name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }
 .empty { background: var(--surface); border: 1px dashed var(--axis); border-radius: 10px; padding: 24px; color: var(--muted); }
 @media (max-width: 640px) { main { padding: 28px 16px 48px; } .panel { flex: 1 1 100%; } }
@@ -416,6 +429,8 @@ def render(rows, corpus_stats):
             + "<h2>All runs</h2>"
             + f'<p class="sub">{esc(corpus_stats)}</p>'
             + table(rows)
+            + '<p class="sub">&#8225; the 95% interval spans zero, so that run does not '
+            "establish any discrimination either way &mdash; usually too few items.</p>"
         )
     status = headline(rows)
     return f"""<!doctype html>

@@ -175,7 +175,7 @@ against one third of the brief's error-type list.
 
 ## Running the paid baselines
 
-Two providers, **one shared prompt and one shared JSON schema** — a cross-provider
+Three providers, **one shared prompt and one shared JSON schema** — a cross-provider
 comparison means nothing if each provider is judged on a different prompt, so both
 subclass `VerdictPredictor` and implement only the API call.
 
@@ -191,6 +191,7 @@ bare `python3` on this machine resolves to a sibling project's `.venv` (no pip):
 
 ```bash
 
+.venv/bin/python evaluate.py run local  --model llama3.1:8b --split dev      # free, ~44 min
 .venv/bin/python evaluate.py run openai --model gpt-4o-mini --limit 20 --yes  # ~$0.01
 .venv/bin/python evaluate.py run openai --model gpt-4.1 --split dev --yes     # ~$1.48
 .venv/bin/python evaluate.py run llm --model claude-opus-5 --split dev --yes  # ~$8.16
@@ -235,6 +236,35 @@ The predictor's system prompt states that about half the passages are clean. Tha
 true of this corpus and stops a model's prior from dominating the result, but it is a
 prompt choice worth recording — a deployment on a real manuscript has a far lower base
 rate.
+
+## The local open-LLM baseline
+
+`run local` talks to [Ollama](https://ollama.com)'s OpenAI-compatible endpoint, so it
+needs no key and costs no API money — this covers the brief's open-LLM baseline and
+makes the whole pipeline testable without credits.
+
+```bash
+ollama pull llama3.1:8b
+.venv/bin/python evaluate.py run local --model llama3.1:8b --split dev
+```
+
+Three things this baseline taught the harness, each of which changed it:
+
+- **Local runs pin sampling; hosted runs cannot.** Consecutive runs of the identical 40
+  items first scored J −0.100, then J +0.250 — a 0.35 swing from ollama's default
+  temperature alone. `LocalPredictor` now uses greedy decoding with a fixed seed, and
+  two runs come out identical on every metric. Hosted frontier models reject sampling
+  parameters outright, so their runs cannot be pinned this way.
+- **Every run reports a 95% Wilson interval** for recall, FPR and J, and the leaderboard
+  flags any run whose J interval spans zero. On 20 pairs that interval is roughly ±0.23,
+  wider than most differences anyone would want to claim.
+- **`attack` filters on kind, not on whether a key is needed.** A local model needs no
+  key, so registering one briefly put a 58-minute llama run inside the suite that is
+  supposed to be instant and free.
+
+Measured here (RTX 1000 Ada, 6 GB): `llama3.1:8b` runs 6.4 s/item warm, ~44 min for the
+410-item dev split. Local inference costs wall clock and hardware rather than API money,
+so `cost_usd` is a true 0.0 and `median_latency_s` is the number to read beside it.
 
 ## Known limitations
 

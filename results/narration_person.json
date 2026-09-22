@@ -9,6 +9,19 @@
   "recall": 0.4559,
   "f1": 0.4769,
   "youden_j": 0.0,
+  "youden_j_ci95": [
+    -0.1176,
+    0.1176
+  ],
+  "youden_j_significant": false,
+  "recall_ci95": [
+    0.3977,
+    0.5153
+  ],
+  "fpr_ci95": [
+    0.3977,
+    0.5153
+  ],
   "false_positive_rate": 0.4559,
   "localization": 0.1452,
   "true_positive": 124,

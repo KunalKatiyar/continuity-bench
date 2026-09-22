@@ -5,6 +5,7 @@ Subcommands
     run     score a predictor over a built corpus and write a results JSON
     list    show the registered predictors
     attack  run every zero-cost heuristic predictor, to show what the corpus leaks
+            (heuristics only - never a model, whose cost is money or wall clock)
 
 A predictor is a callable taking one corpus item and returning a Prediction. The
 point of the cheap heuristic predictors is adversarial: if a regex scoring no LLM
@@ -20,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import math
 import statistics
 import time
 from collections import Counter, defaultdict
@@ -43,6 +45,22 @@ class Prediction:
     input_tokens: int = 0
     output_tokens: int = 0
     note: str = ""
+
+
+def wilson_interval(successes, trials, z=1.96):
+    """95% Wilson score interval for a proportion, or (0, 0) with no trials.
+
+    Plain +/- sqrt(p(1-p)/n) misbehaves near 0 and 1 and at small n, which is exactly
+    where a benchmark run sits: 20 injected items is enough to read a headline number
+    off and wrong enough to mislead.
+    """
+    if trials == 0:
+        return 0.0, 0.0
+    p = successes / trials
+    denominator = 1 + z * z / trials
+    centre = (p + z * z / (2 * trials)) / denominator
+    spread = z * math.sqrt(p * (1 - p) / trials + z * z / (4 * trials * trials)) / denominator
+    return max(0.0, centre - spread), min(1.0, centre + spread)
 
 
 @dataclass
@@ -96,12 +114,36 @@ class Scores:
     def localization(self):
         return self.localized / self.true_positive if self.true_positive else 0.0
 
+    @property
+    def recall_interval(self):
+        return wilson_interval(self.true_positive, self.true_positive + self.false_negative)
+
+    @property
+    def fpr_interval(self):
+        return wilson_interval(self.false_positive, self.false_positive + self.true_negative)
+
+    @property
+    def youden_j_interval(self):
+        """Worst and best case J, combining the recall and FPR intervals.
+
+        A J interval spanning zero means the run cannot tell "discriminates nothing"
+        from "discriminates a little", however tidy the point estimate looks.
+        """
+        recall_lo, recall_hi = self.recall_interval
+        fpr_lo, fpr_hi = self.fpr_interval
+        return recall_lo - fpr_hi, recall_hi - fpr_lo
+
     def summary(self):
+        j_lo, j_hi = self.youden_j_interval
         return {
             "precision": round(self.precision, 4),
             "recall": round(self.recall, 4),
             "f1": round(self.f1, 4),
             "youden_j": round(self.youden_j, 4),
+            "youden_j_ci95": [round(j_lo, 4), round(j_hi, 4)],
+            "youden_j_significant": bool(j_lo > 0 or j_hi < 0),
+            "recall_ci95": [round(v, 4) for v in self.recall_interval],
+            "fpr_ci95": [round(v, 4) for v in self.fpr_interval],
             "false_positive_rate": round(self.false_positive_rate, 4),
             "localization": round(self.localization, 4),
             "true_positive": self.true_positive,
@@ -160,6 +202,9 @@ def score(items, predict):
 
 
 PREDICTORS = {}
+
+
+HEURISTIC_KINDS = ("attack", "floor", "diagnostic")
 
 
 def predictor(name, kind="attack", needs_key=False):
@@ -477,6 +522,8 @@ Answer with has_error, paragraph_index (the 0-based index of the paragraph holdi
 contradiction, or -1 when has_error is false) and a one-sentence reason."""
 
 
+SECONDS_PER_LOCAL_ITEM = 6.4
+
 FATAL_API_CODES = {
     "insufficient_quota",
     "credit_balance_exhausted",
@@ -540,6 +587,8 @@ class VerdictPredictor:
     kind = "model"
     needs_key = True
     provider = "unset"
+
+    sampling = {}
 
     def __init__(self, model, effort="high", max_tokens=2000, rates=None):
         self.model = model
@@ -667,6 +716,7 @@ class OpenAIPredictor(VerdictPredictor):
         response = self.client().chat.completions.create(
             model=self.model,
             max_completion_tokens=self.max_tokens,
+            **self.sampling,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
@@ -688,11 +738,46 @@ class OpenAIPredictor(VerdictPredictor):
         )
 
 
-PROVIDERS = {"llm": AnthropicPredictor, "openai": OpenAIPredictor}
-DEFAULT_MODELS = {"llm": "claude-opus-5", "openai": "gpt-4.1"}
+class LocalPredictor(OpenAIPredictor):
+    """Ask a model served locally by Ollama the same question, over its OpenAI-compatible API.
+
+    Ollama's /v1 endpoint accepts and honours a strict json_schema response_format, so
+    this needs nothing but a base URL: the prompt, schema and verdict parsing are the
+    same ones the hosted providers get, which is the only way the comparison means
+    anything. Satisfies the brief's open-LLM baseline.
+
+    API cost is genuinely zero, not merely unknown, so rates are pinned to (0, 0)
+    rather than left to the unknown-model warning. That is marginal API cost only -
+    local inference costs wall clock and hardware instead, which is why the results
+    record median latency alongside it.
+    """
+
+    provider = "local"
+    needs_key = False
+    # Greedy decoding with a fixed seed. Without this the same 40 items scored J -0.100
+    # and then J +0.250 on consecutive runs of the same model - a 0.35 swing that would
+    # make any leaderboard position meaningless. Hosted frontier models do not accept
+    # sampling parameters at all, which is part of why every run reports a confidence
+    # interval rather than a bare point estimate.
+    sampling = {"temperature": 0.0, "seed": 20260922}
+
+    def __init__(self, model, base_url="http://localhost:11434/v1", **kw):
+        kw.setdefault("rates", (0.0, 0.0))
+        super().__init__(model=model, **kw)
+        self.base_url = base_url
+
+    def build_client(self):
+        from openai import OpenAI
+
+        return OpenAI(base_url=self.base_url, api_key="ollama")
+
+
+PROVIDERS = {"llm": AnthropicPredictor, "openai": OpenAIPredictor, "local": LocalPredictor}
+DEFAULT_MODELS = {"llm": "claude-opus-5", "openai": "gpt-4.1", "local": "llama3.1:8b"}
 
 predictor("llm", kind="model", needs_key=True)(AnthropicPredictor("claude-opus-5"))
 predictor("openai", kind="model", needs_key=True)(OpenAIPredictor("gpt-4.1"))
+predictor("local", kind="model", needs_key=False)(LocalPredictor("llama3.1:8b"))
 
 
 def load_items(corpus, split=None, rule=None, limit=None):
@@ -733,10 +818,13 @@ def write_results(name, corpus, items, scores, extra=None, kind="attack"):
 
 
 def print_row(name, summary):
+    lo, hi = summary["youden_j_ci95"]
+    mark = "" if summary["youden_j_significant"] else "  (CI spans 0)"
     print(
-        f"{name:22} J {summary['youden_j']:+.3f}  F1 {summary['f1']:.3f}  "
-        f"R {summary['recall']:.3f}  FPR {summary['false_positive_rate']:.3f}  "
-        f"loc {summary['localization']:.3f}  ${summary['cost_usd']:.4f}"
+        f"{name:22} J {summary['youden_j']:+.3f} [{lo:+.3f},{hi:+.3f}]  "
+        f"F1 {summary['f1']:.3f}  R {summary['recall']:.3f}  "
+        f"FPR {summary['false_positive_rate']:.3f}  loc {summary['localization']:.3f}  "
+        f"${summary['cost_usd']:.4f}{mark}"
     )
 
 
@@ -753,10 +841,19 @@ def cmd_run(args):
         rates = None
         if args.input_rate is not None and args.output_rate is not None:
             rates = (args.input_rate, args.output_rate)
-        predict = PROVIDERS[args.predictor](
-            model=args.model or DEFAULT_MODELS[args.predictor], effort=args.effort, rates=rates
-        )
+        kwargs = {"model": args.model or DEFAULT_MODELS[args.predictor], "effort": args.effort}
+        if rates is not None:
+            kwargs["rates"] = rates
+        if args.predictor == "local" and args.base_url:
+            kwargs["base_url"] = args.base_url
+        predict = PROVIDERS[args.predictor](**kwargs)
     name = getattr(predict, "predictor_name", args.predictor)
+    if predict.kind == "model" and not predict.needs_key:
+        minutes = len(items) * SECONDS_PER_LOCAL_ITEM / 60
+        print(
+            f"{name}: {len(items)} items against a local model, roughly {minutes:.0f} min. "
+            "No API cost, but it is not instant."
+        )
     if predict.needs_key:
         pairs = len({item["pair_id"] for item in items})
         print(f"{name}: {len(items)} items ({pairs} pairs) against a paid API.")
@@ -813,7 +910,7 @@ def cmd_attack(args):
     print(f"{len({i['pair_id'] for i in items})} pairs, {len(items)} items\n")
     best, winner = -1.0, None
     for name, predict in PREDICTORS.items():
-        if predict.needs_key:
+        if predict.kind not in HEURISTIC_KINDS:
             continue
         scores = score(items, predict)
         _, payload = write_results(name, args.corpus, items, scores, kind=predict.kind)
@@ -860,6 +957,7 @@ def main(argv=None):
     common(run)
     run.add_argument("--model", help="model id, for a provider predictor")
     run.add_argument("--effort", default="high", help="reasoning effort, where the provider has one")
+    run.add_argument("--base-url", help="OpenAI-compatible endpoint, for the local predictor")
     run.add_argument("--input-rate", type=float, help="USD per million input tokens")
     run.add_argument("--output-rate", type=float, help="USD per million output tokens")
     run.add_argument("--yes", action="store_true", help="confirm spending on a paid predictor")
