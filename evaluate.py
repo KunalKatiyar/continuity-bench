@@ -431,26 +431,32 @@ predictor("pair_diff_targeted", kind="diagnostic")(PairDiffTargetedAttack())
 predictor("pair_leak", kind="diagnostic")(PairLeakAttack())
 
 
+# USD per million tokens, input then output. A wrong rate silently corrupts the cost
+# axis, which is this benchmark's headline claim, so an unlisted model reports 0.0 and
+# warns rather than guessing - pass --input-rate/--output-rate to supply the real ones.
+# Verify these against current pricing pages before publishing any cost number.
 MODEL_PRICING_USD_PER_MTOK = {
     "claude-fable-5-1": (10.00, 50.00),
     "claude-opus-5": (5.00, 25.00),
     "claude-opus-4-8": (5.00, 25.00),
     "claude-sonnet-5": (2.00, 10.00),
     "claude-haiku-4-5": (1.00, 5.00),
+    "gpt-4.1": (2.00, 8.00),
+    "gpt-4o": (2.50, 10.00),
+    "gpt-4o-mini": (0.15, 0.60),
 }
 
-VERDICT_SCHEMA = {
-    "type": "json_schema",
-    "schema": {
-        "type": "object",
-        "properties": {
-            "has_error": {"type": "boolean"},
-            "paragraph_index": {"type": "integer"},
-            "reason": {"type": "string"},
-        },
-        "required": ["has_error", "paragraph_index", "reason"],
-        "additionalProperties": False,
-    },
+VERDICT_SCHEMA_NAME = "continuity_verdict"
+VERDICT_PROPERTIES = {
+    "has_error": {"type": "boolean"},
+    "paragraph_index": {"type": "integer"},
+    "reason": {"type": "string"},
+}
+VERDICT_JSON_SCHEMA = {
+    "type": "object",
+    "properties": VERDICT_PROPERTIES,
+    "required": list(VERDICT_PROPERTIES),
+    "additionalProperties": False,
 }
 
 SYSTEM_PROMPT = """You check passages of fiction for internal continuity errors.
@@ -471,40 +477,66 @@ Answer with has_error, paragraph_index (the 0-based index of the paragraph holdi
 contradiction, or -1 when has_error is false) and a one-sentence reason."""
 
 
-class LLMPredictor:
-    """Predictor that asks a Claude model whether a passage contradicts itself.
+def read_key_file(path):
+    """Read an API key from a file, so a key never has to be pasted into a session.
 
-    Registered lazily: the anthropic SDK is imported on first call, so the corpus
-    builder and every free heuristic stay dependency-free. Needs credentials - an
-    ANTHROPIC_API_KEY, or an `ant auth login` profile the SDK picks up on its own.
+    Returns None when the file is absent, which leaves the SDK to resolve credentials
+    from the environment as usual.
+    """
+    path = Path(path).expanduser()
+    if not path.exists():
+        return None
+    return path.read_text(encoding="utf-8").strip() or None
+
+
+class VerdictPredictor:
+    """Shared prompt, pricing and verdict parsing for any chat model.
+
+    Subclasses implement complete() and nothing else. Keeping one prompt and one
+    schema across providers is what makes a cross-provider comparison mean anything -
+    two providers judged on two different prompts is not a benchmark.
 
     ponytail: one call per passage, no prompt caching. The passage is most of the
     prompt and changes every call, so a cached prefix would buy almost nothing here;
-    revisit if the system prompt grows or a per-novel story state gets prepended.
+    revisit if a per-novel story state gets prepended.
     """
 
-    def __init__(self, model="claude-opus-5", effort="high", max_tokens=2000):
+    kind = "model"
+    needs_key = True
+    provider = "unset"
+
+    def __init__(self, model, effort="high", max_tokens=2000, rates=None):
         self.model = model
         self.effort = effort
         self.max_tokens = max_tokens
-        self.predictor_name = f"llm_{model}_{effort}"
+        self.rates = rates
+        self.predictor_name = f"{self.provider}_{model}_{effort}"
         self._client = None
         self.parse_failures = 0
         self.parse_failure_notes = []
 
-    def _ensure_client(self):
+    def client(self):
+        """The provider SDK client, constructed on first use."""
         if self._client is None:
-            import anthropic
-
-            self._client = anthropic.Anthropic()
+            self._client = self.build_client()
         return self._client
 
+    def build_client(self):
+        raise NotImplementedError
+
+    def complete(self, prompt):
+        """Return (text, input_tokens, output_tokens) for one passage."""
+        raise NotImplementedError
+
     def price(self, input_tokens, output_tokens):
-        """Cost in USD for one call, from the first-party per-million-token rates."""
-        rates = MODEL_PRICING_USD_PER_MTOK.get(self.model)
+        """Cost in USD for one call, or 0.0 when no rate is known for the model."""
+        rates = self.rates or MODEL_PRICING_USD_PER_MTOK.get(self.model)
         if rates is None:
             return 0.0
         return input_tokens / 1e6 * rates[0] + output_tokens / 1e6 * rates[1]
+
+    def has_rates(self):
+        return bool(self.rates or MODEL_PRICING_USD_PER_MTOK.get(self.model))
 
     def build_prompt(self, item):
         """Number the paragraphs so the model can point at one."""
@@ -514,18 +546,8 @@ class LLMPredictor:
         return f"Passage:\n\n{numbered}\n\nDoes this passage contradict itself?"
 
     def __call__(self, item):
-        client = self._ensure_client()
-        response = client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=SYSTEM_PROMPT,
-            thinking={"type": "adaptive"},
-            output_config={"effort": self.effort, "format": VERDICT_SCHEMA},
-            messages=[{"role": "user", "content": self.build_prompt(item)}],
-        )
-        usage = response.usage
-        cost = self.price(usage.input_tokens, usage.output_tokens)
-        text = next((b.text for b in response.content if b.type == "text"), "")
+        text, input_tokens, output_tokens = self.complete(self.build_prompt(item))
+        cost = self.price(input_tokens, output_tokens)
         try:
             verdict = json.loads(text)
         except json.JSONDecodeError:
@@ -534,8 +556,8 @@ class LLMPredictor:
             return Prediction(
                 has_error=False,
                 cost_usd=cost,
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
                 note="PARSE FAILURE: " + text[:200],
             )
         paragraph = verdict.get("paragraph_index")
@@ -543,13 +565,88 @@ class LLMPredictor:
             has_error=bool(verdict.get("has_error")),
             paragraph_index=paragraph if isinstance(paragraph, int) and paragraph >= 0 else None,
             cost_usd=cost,
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             note=str(verdict.get("reason", ""))[:300],
         )
 
 
-predictor("llm", kind="model", needs_key=True)(LLMPredictor())
+class AnthropicPredictor(VerdictPredictor):
+    """Ask a Claude model whether a passage contradicts itself.
+
+    Credentials: ANTHROPIC_API_KEY, an `ant auth login` profile the SDK finds on its
+    own, or ~/.anthropic-key.
+    """
+
+    provider = "claude"
+
+    def build_client(self):
+        import anthropic
+
+        key = read_key_file("~/.anthropic-key")
+        return anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
+
+    def complete(self, prompt):
+        response = self.client().messages.create(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            system=SYSTEM_PROMPT,
+            thinking={"type": "adaptive"},
+            output_config={
+                "effort": self.effort,
+                "format": {"type": "json_schema", "schema": VERDICT_JSON_SCHEMA},
+            },
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = next((block.text for block in response.content if block.type == "text"), "")
+        return text, response.usage.input_tokens, response.usage.output_tokens
+
+
+class OpenAIPredictor(VerdictPredictor):
+    """Ask an OpenAI model the same question, with the same prompt and schema.
+
+    Credentials: OPENAI_API_KEY or ~/.openai-key. Uses Chat Completions with a strict
+    json_schema response format so the verdict parses without prompt-wrangling.
+    """
+
+    provider = "openai"
+
+    def build_client(self):
+        from openai import OpenAI
+
+        key = read_key_file("~/.openai-key")
+        return OpenAI(api_key=key) if key else OpenAI()
+
+    def complete(self, prompt):
+        response = self.client().chat.completions.create(
+            model=self.model,
+            max_completion_tokens=self.max_tokens,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": VERDICT_SCHEMA_NAME,
+                    "strict": True,
+                    "schema": VERDICT_JSON_SCHEMA,
+                },
+            },
+        )
+        usage = response.usage
+        return (
+            response.choices[0].message.content or "",
+            usage.prompt_tokens,
+            usage.completion_tokens,
+        )
+
+
+PROVIDERS = {"llm": AnthropicPredictor, "openai": OpenAIPredictor}
+DEFAULT_MODELS = {"llm": "claude-opus-5", "openai": "gpt-4.1"}
+
+predictor("llm", kind="model", needs_key=True)(AnthropicPredictor("claude-opus-5"))
+predictor("openai", kind="model", needs_key=True)(OpenAIPredictor("gpt-4.1"))
 
 
 def load_items(corpus, split=None, rule=None, limit=None):
@@ -606,12 +703,23 @@ def cmd_run(args):
         print("no items matched the filters")
         return 2
     predict = PREDICTORS[args.predictor]
-    if args.predictor == "llm":
-        predict = LLMPredictor(model=args.model, effort=args.effort)
+    if args.predictor in PROVIDERS:
+        rates = None
+        if args.input_rate is not None and args.output_rate is not None:
+            rates = (args.input_rate, args.output_rate)
+        predict = PROVIDERS[args.predictor](
+            model=args.model or DEFAULT_MODELS[args.predictor], effort=args.effort, rates=rates
+        )
     name = getattr(predict, "predictor_name", args.predictor)
     if predict.needs_key:
         pairs = len({item["pair_id"] for item in items})
         print(f"{name}: {len(items)} items ({pairs} pairs) against a paid API.")
+        if not predict.has_rates():
+            print(
+                f"WARNING no published rate known for {predict.model!r}, so cost will be "
+                "reported as $0.00. Pass --input-rate and --output-rate (USD per million "
+                "tokens) to record the real cost."
+            )
         if not args.yes:
             print("This spends real money. Re-run with --yes to confirm.")
             return 2
@@ -688,8 +796,10 @@ def main(argv=None):
     run = sub.add_parser("run", help="score one predictor")
     run.add_argument("predictor")
     common(run)
-    run.add_argument("--model", default="claude-opus-5", help="model id for the llm predictor")
-    run.add_argument("--effort", default="high", choices=("low", "medium", "high", "xhigh", "max"))
+    run.add_argument("--model", help="model id, for a provider predictor")
+    run.add_argument("--effort", default="high", help="reasoning effort, where the provider has one")
+    run.add_argument("--input-rate", type=float, help="USD per million input tokens")
+    run.add_argument("--output-rate", type=float, help="USD per million output tokens")
     run.add_argument("--yes", action="store_true", help="confirm spending on a paid predictor")
     run.set_defaults(func=cmd_run)
 

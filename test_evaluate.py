@@ -170,47 +170,24 @@ def test_load_items_keeps_both_halves_when_filtering_by_rule(tmp_path=None):
     assert {r["ground_truth"]["has_error"] for r in kept} == {True, False}
 
 
-class _FakeUsage:
-    def __init__(self, input_tokens, output_tokens):
+class _Stub(evaluate.VerdictPredictor):
+    """A provider whose completion is supplied by the test."""
+
+    provider = "stub"
+
+    def __init__(self, text, input_tokens=1000, output_tokens=50, **kw):
+        super().__init__(model=kw.pop("model", "claude-opus-5"), **kw)
+        self.text = text
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
 
-
-class _FakeBlock:
-    def __init__(self, text):
-        self.type = "text"
-        self.text = text
+    def complete(self, prompt):
+        self.last_prompt = prompt
+        return self.text, self.input_tokens, self.output_tokens
 
 
-class _FakeResponse:
-    def __init__(self, text, input_tokens=1000, output_tokens=50):
-        self.content = [_FakeBlock(text)]
-        self.usage = _FakeUsage(input_tokens, output_tokens)
-
-
-class _FakeMessages:
-    def __init__(self, text):
-        self.text = text
-        self.last_kwargs = None
-
-    def create(self, **kwargs):
-        self.last_kwargs = kwargs
-        return _FakeResponse(self.text)
-
-
-class _FakeClient:
-    def __init__(self, text):
-        self.messages = _FakeMessages(text)
-
-
-def _llm(text, **kw):
-    predictor = evaluate.LLMPredictor(**kw)
-    predictor._client = _FakeClient(text)
-    return predictor
-
-
-def test_llm_predictor_reads_a_well_formed_verdict():
-    predictor = _llm('{"has_error": true, "paragraph_index": 4, "reason": "eye colour changes"}')
+def test_verdict_predictor_reads_a_well_formed_verdict():
+    predictor = _Stub('{"has_error": true, "paragraph_index": 4, "reason": "eye colour changes"}')
     prediction = predictor(_item("p1", True, "r"))
     assert prediction.has_error is True
     assert prediction.paragraph_index == 4
@@ -218,37 +195,45 @@ def test_llm_predictor_reads_a_well_formed_verdict():
     assert predictor.parse_failures == 0
 
 
-def test_llm_predictor_maps_negative_paragraph_to_none():
-    predictor = _llm('{"has_error": false, "paragraph_index": -1, "reason": "consistent"}')
+def test_verdict_predictor_maps_negative_paragraph_to_none():
+    predictor = _Stub('{"has_error": false, "paragraph_index": -1, "reason": "consistent"}')
     prediction = predictor(_item("p1", False))
     assert prediction.has_error is False
     assert prediction.paragraph_index is None
 
 
-def test_llm_predictor_counts_a_parse_failure_instead_of_crashing():
-    predictor = _llm("I think the passage is fine, actually.")
+def test_verdict_predictor_counts_a_parse_failure_instead_of_crashing():
+    predictor = _Stub("I think the passage is fine, actually.")
     prediction = predictor(_item("p1", True, "r"))
     assert prediction.has_error is False
     assert predictor.parse_failures == 1
+    assert predictor.parse_failure_notes == ["I think the passage is fine, actually."]
     assert prediction.note.startswith("PARSE FAILURE")
     assert prediction.cost_usd > 0
 
 
-def test_llm_predictor_prices_from_the_published_rates():
-    predictor = _llm("{}", model="claude-opus-5")
+def test_pricing_comes_from_the_published_rates():
+    predictor = _Stub("{}", model="claude-opus-5")
     assert round(predictor.price(1_000_000, 0), 6) == 5.0
     assert round(predictor.price(0, 1_000_000), 6) == 25.0
-    cheap = _llm("{}", model="claude-haiku-4-5")
+    cheap = _Stub("{}", model="claude-haiku-4-5")
     assert round(cheap.price(1_000_000, 1_000_000), 6) == 6.0
 
 
-def test_llm_predictor_prices_an_unknown_model_as_zero_rather_than_guessing():
-    predictor = _llm("{}", model="some-unreleased-model")
+def test_an_unknown_model_reports_zero_cost_rather_than_a_guess():
+    predictor = _Stub("{}", model="some-unreleased-model")
+    assert predictor.has_rates() is False
     assert predictor.price(1_000_000, 1_000_000) == 0.0
 
 
-def test_llm_predictor_numbers_paragraphs_for_localization():
-    predictor = _llm("{}")
+def test_supplied_rates_override_the_table_and_cover_unknown_models():
+    predictor = _Stub("{}", model="some-unreleased-model", rates=(3.0, 9.0))
+    assert predictor.has_rates() is True
+    assert round(predictor.price(1_000_000, 1_000_000), 6) == 12.0
+
+
+def test_paragraphs_are_numbered_for_localization():
+    predictor = _Stub("{}")
     item = _item("p1", True, "r", text="first para\n\nsecond para\n\nthird para")
     prompt = predictor.build_prompt(item)
     assert "[0] first para" in prompt
@@ -256,29 +241,88 @@ def test_llm_predictor_numbers_paragraphs_for_localization():
     assert "[2] third para" in prompt
 
 
-def test_llm_predictor_sends_the_documented_request_shape():
-    predictor = _llm('{"has_error": false, "paragraph_index": -1, "reason": "ok"}', effort="low")
-    predictor(_item("p1", False))
-    kwargs = predictor._client.messages.last_kwargs
-    assert kwargs["model"] == "claude-opus-5"
-    assert kwargs["thinking"] == {"type": "adaptive"}
-    assert kwargs["output_config"]["effort"] == "low"
-    assert kwargs["output_config"]["format"]["type"] == "json_schema"
-    assert "budget_tokens" not in kwargs
-    assert kwargs["output_config"]["format"]["schema"]["required"] == [
+def test_both_providers_share_one_prompt_and_one_schema():
+    """A cross-provider comparison is meaningless if each provider sees a different prompt."""
+    claude = evaluate.AnthropicPredictor("claude-opus-5")
+    openai = evaluate.OpenAIPredictor("gpt-4.1")
+    item = _item("p1", True, "r", text="a para here\n\nb para here")
+    assert claude.build_prompt(item) == openai.build_prompt(item)
+    assert evaluate.VERDICT_JSON_SCHEMA["required"] == [
         "has_error",
         "paragraph_index",
         "reason",
     ]
+    assert evaluate.VERDICT_JSON_SCHEMA["additionalProperties"] is False
 
 
-def test_llm_predictor_is_registered_as_needing_a_key():
-    assert evaluate.PREDICTORS["llm"].needs_key is True
+def test_provider_names_are_distinct_so_results_do_not_overwrite():
+    claude = evaluate.AnthropicPredictor("claude-opus-5", effort="high")
+    openai = evaluate.OpenAIPredictor("gpt-4.1", effort="high")
+    assert claude.predictor_name == "claude_claude-opus-5_high"
+    assert openai.predictor_name == "openai_gpt-4.1_high"
+    assert claude.predictor_name != openai.predictor_name
+
+
+def test_anthropic_request_matches_the_documented_shape():
+    captured = {}
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            block = type("B", (), {"type": "text", "text": '{"has_error": false, "paragraph_index": -1, "reason": "ok"}'})()
+            usage = type("U", (), {"input_tokens": 10, "output_tokens": 2})()
+            return type("R", (), {"content": [block], "usage": usage})()
+
+    predictor = evaluate.AnthropicPredictor("claude-opus-5", effort="low")
+    predictor._client = type("C", (), {"messages": FakeMessages()})()
+    predictor(_item("p1", False))
+    assert captured["model"] == "claude-opus-5"
+    assert captured["thinking"] == {"type": "adaptive"}
+    assert captured["output_config"]["effort"] == "low"
+    assert captured["output_config"]["format"]["type"] == "json_schema"
+    assert "budget_tokens" not in captured
+
+
+def test_openai_request_uses_a_strict_json_schema_response_format():
+    captured = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            message = type("M", (), {"content": '{"has_error": true, "paragraph_index": 1, "reason": "ok"}'})()
+            choice = type("C", (), {"message": message})()
+            usage = type("U", (), {"prompt_tokens": 20, "completion_tokens": 4})()
+            return type("R", (), {"choices": [choice], "usage": usage})()
+
+    predictor = evaluate.OpenAIPredictor("gpt-4.1")
+    predictor._client = type(
+        "C", (), {"chat": type("Ch", (), {"completions": FakeCompletions()})()}
+    )()
+    prediction = predictor(_item("p1", True, "r"))
+    assert captured["model"] == "gpt-4.1"
+    fmt = captured["response_format"]
+    assert fmt["type"] == "json_schema"
+    assert fmt["json_schema"]["strict"] is True
+    assert fmt["json_schema"]["schema"] == evaluate.VERDICT_JSON_SCHEMA
+    assert [m["role"] for m in captured["messages"]] == ["system", "user"]
+    assert prediction.has_error is True
+    assert prediction.input_tokens == 20 and prediction.output_tokens == 4
+    assert round(prediction.cost_usd, 8) == round(20 / 1e6 * 2.0 + 4 / 1e6 * 8.0, 8)
+
+
+def test_both_paid_predictors_are_registered_and_flagged():
+    for name in ("llm", "openai"):
+        assert evaluate.PREDICTORS[name].needs_key is True
+        assert evaluate.PREDICTORS[name].kind == "model"
     assert all(
         not predict.needs_key
         for name, predict in evaluate.PREDICTORS.items()
-        if name != "llm"
+        if name not in ("llm", "openai")
     )
+
+
+def test_a_missing_key_file_leaves_the_sdk_to_use_the_environment():
+    assert evaluate.read_key_file("~/.definitely-not-a-key-file-9f3a") is None
 
 
 if __name__ == "__main__":

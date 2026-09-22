@@ -175,19 +175,36 @@ against one third of the brief's error-type list.
 
 ## Running the paid baselines
 
-Needs credentials: `ANTHROPIC_API_KEY`, or an `ant auth login` profile the SDK picks up
-on its own. `pip install anthropic`.
+Two providers, **one shared prompt and one shared JSON schema** — a cross-provider
+comparison means nothing if each provider is judged on a different prompt, so both
+subclass `VerdictPredictor` and implement only the API call.
 
 ```bash
-python3 evaluate.py run llm --split dev --limit 20 --yes                  # smoke test, ~40 calls
-python3 evaluate.py run llm --model claude-opus-5 --effort high --yes     # full dev split
-python3 evaluate.py run llm --model claude-haiku-4-5 --effort low --yes   # the cheap end
+pip install anthropic          # for the claude predictor
+pip install openai             # for the openai predictor
+
+python3 evaluate.py run llm    --split dev --limit 20 --yes    # smoke test, ~40 calls
+python3 evaluate.py run openai --split dev --limit 20 --yes
+python3 evaluate.py run llm    --model claude-opus-5  --effort high --yes
+python3 evaluate.py run openai --model gpt-4.1 --yes
+python3 evaluate.py run openai --model gpt-5 --input-rate 1.25 --output-rate 10 --yes
 ```
 
-A paid run refuses to start without `--yes`, and prints the item count first. Cost comes
-from `response.usage` against the published per-million-token rates, not an estimate.
-Responses are constrained with a JSON schema; a response that still fails to parse is
-counted and reported rather than silently scored as "no error".
+Credentials, in the order each SDK looks: `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`, then
+`~/.anthropic-key` / `~/.openai-key` (mode 600). The key file exists so a key never has
+to be pasted into a terminal session or a chat.
+
+Guards, because this spends real money:
+
+- A paid run refuses to start without `--yes`, printing the item count first.
+- Cost comes from the API's own `usage`, never an estimate.
+- **An unlisted model reports $0.00 and says so loudly** rather than inventing a rate —
+  a wrong rate silently corrupts the cost axis, which is this benchmark's headline
+  claim. Pass `--input-rate` / `--output-rate` (USD per million tokens) to record the
+  real cost. The rates in `MODEL_PRICING_USD_PER_MTOK` should be checked against current
+  pricing pages before any cost number is published.
+- Responses are constrained with a strict JSON schema; one that still fails to parse is
+  counted, reported with its text, and not silently scored as "no error".
 
 The predictor's system prompt states that about half the passages are clean. That is
 true of this corpus and stops a model's prior from dominating the result, but it is a
