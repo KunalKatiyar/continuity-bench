@@ -179,20 +179,35 @@ Two providers, **one shared prompt and one shared JSON schema** — a cross-prov
 comparison means nothing if each provider is judged on a different prompt, so both
 subclass `VerdictPredictor` and implement only the API call.
 
-```bash
-pip install anthropic          # for the claude predictor
-pip install openai             # for the openai predictor
+Set-up, once. The free path is stdlib-only, but the paid predictors need SDKs, and a
+bare `python3` on this machine resolves to a sibling project's `.venv` (no pip):
 
-python3 evaluate.py run llm    --split dev --limit 20 --yes    # smoke test, ~40 calls
-python3 evaluate.py run openai --split dev --limit 20 --yes
-python3 evaluate.py run llm    --model claude-opus-5  --effort high --yes
-python3 evaluate.py run openai --model gpt-4.1 --yes
-python3 evaluate.py run openai --model gpt-5 --input-rate 1.25 --output-rate 10 --yes
+```bash
+~/.pyenv/versions/3.12.10/bin/python -m venv .venv
+.venv/bin/python -m pip install openai anthropic
+```
+
+`run_all_checks.sh` picks up `.venv` automatically when it exists. Then:
+
+```bash
+
+.venv/bin/python evaluate.py run openai --model gpt-4o-mini --limit 20 --yes  # ~$0.01
+.venv/bin/python evaluate.py run openai --model gpt-4.1 --split dev --yes     # ~$1.48
+.venv/bin/python evaluate.py run llm --model claude-opus-5 --split dev --yes  # ~$8.16
+.venv/bin/python evaluate.py run openai --model gpt-5 --input-rate 1.25 --output-rate 10 --yes
 ```
 
 Credentials, in the order each SDK looks: `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`, then
 `~/.anthropic-key` / `~/.openai-key` (mode 600). The key file exists so a key never has
-to be pasted into a terminal session or a chat.
+to be pasted into a chat. Write it from an interactive shell, where `read` has a TTY:
+
+```bash
+read -rs KEY && printf '%s' "$KEY" > ~/.openai-key && chmod 600 ~/.openai-key && unset KEY
+```
+
+Estimated cost of a full dev-split pass (410 items, ~607k input tokens): `gpt-4o-mini`
+$0.11, `gpt-4.1` $1.48, `claude-haiku-4-5` $1.63, `claude-sonnet-5` $3.26,
+`claude-opus-5` $8.16.
 
 Guards, because this spends real money:
 
