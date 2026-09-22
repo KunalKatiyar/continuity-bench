@@ -220,6 +220,16 @@ Guards, because this spends real money:
   pricing pages before any cost number is published.
 - Responses are constrained with a strict JSON schema; one that still fails to parse is
   counted, reported with its text, and not silently scored as "no error".
+- **API failures are split into fatal and transient.** A quota or auth error affects
+  every remaining item, so the run aborts immediately with a one-line reason and writes
+  no results file, rather than printing 400 tracebacks. Anything else skips that one
+  item, still counts against recall, and is reported loudly — a full dev pass is ~15
+  minutes, and one flaky response should not throw it away.
+
+An API subscription is not API credit: **ChatGPT Plus does not cover the OpenAI API**,
+and Claude Pro/Max does not cover the Anthropic API. Both bill prepaid credits from
+their developer platform separately. A valid key with a zero balance fails with
+`429 insufficient_quota`, which reads like a broken key but is a billing state.
 
 The predictor's system prompt states that about half the passages are clean. That is
 true of this corpus and stops a model's prior from dominating the result, but it is a

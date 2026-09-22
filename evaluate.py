@@ -477,6 +477,42 @@ Answer with has_error, paragraph_index (the 0-based index of the paragraph holdi
 contradiction, or -1 when has_error is false) and a one-sentence reason."""
 
 
+FATAL_API_CODES = {
+    "insufficient_quota",
+    "credit_balance_exhausted",
+    "invalid_api_key",
+    "account_deactivated",
+    "model_not_found",
+    "permission_denied",
+}
+
+
+class RunAborted(Exception):
+    """A failure that will hit every remaining item, so the run should stop now."""
+
+
+def classify_api_error(exc):
+    """Return a fatal message for an error that will not fix itself, else None.
+
+    A quota or auth failure affects every remaining item, so retrying 400 more times
+    wastes wall clock and prints 400 tracebacks. Anything else is treated as transient
+    and skipped, so one flaky response cannot throw away a long run.
+    """
+    text = str(exc)
+    body = getattr(exc, "body", None)
+    code = ""
+    if isinstance(body, dict):
+        error = body.get("error") or {}
+        code = str(error.get("code") or error.get("type") or "")
+    for candidate in FATAL_API_CODES:
+        if candidate in code or candidate in text:
+            return f"{type(exc).__name__}: {candidate}"
+    status = getattr(exc, "status_code", None)
+    if status in (401, 403, 404):
+        return f"{type(exc).__name__}: HTTP {status}"
+    return None
+
+
 def read_key_file(path):
     """Read an API key from a file, so a key never has to be pasted into a session.
 
@@ -514,6 +550,8 @@ class VerdictPredictor:
         self._client = None
         self.parse_failures = 0
         self.parse_failure_notes = []
+        self.api_failures = 0
+        self.api_failure_notes = []
 
     def client(self):
         """The provider SDK client, constructed on first use."""
@@ -546,7 +584,15 @@ class VerdictPredictor:
         return f"Passage:\n\n{numbered}\n\nDoes this passage contradict itself?"
 
     def __call__(self, item):
-        text, input_tokens, output_tokens = self.complete(self.build_prompt(item))
+        try:
+            text, input_tokens, output_tokens = self.complete(self.build_prompt(item))
+        except Exception as exc:
+            fatal = classify_api_error(exc)
+            if fatal:
+                raise RunAborted(fatal) from exc
+            self.api_failures += 1
+            self.api_failure_notes.append(f"{type(exc).__name__}: {str(exc)[:160]}")
+            return Prediction(has_error=False, note=f"API FAILURE: {type(exc).__name__}")
         cost = self.price(input_tokens, output_tokens)
         try:
             verdict = json.loads(text)
@@ -723,21 +769,37 @@ def cmd_run(args):
         if not args.yes:
             print("This spends real money. Re-run with --yes to confirm.")
             return 2
-    scores = score(items, predict)
+    try:
+        scores = score(items, predict)
+    except RunAborted as exc:
+        print(f"\nABORTED after the API returned a failure that affects every item: {exc}")
+        if "quota" in str(exc) or "credit" in str(exc):
+            print("Add credits, then re-run. Nothing was scored and no results file was written.")
+        return 3
     extra = {
         key: value
         for key in ("model", "effort")
         if (value := getattr(predict, key, None)) is not None
     }
     failures = getattr(predict, "parse_failures", 0)
+    api_failures = getattr(predict, "api_failures", 0)
     if failures:
         extra["parse_failures"] = failures
+    if api_failures:
+        extra["api_failures"] = api_failures
     path, payload = write_results(name, args.corpus, items, scores, extra, predict.kind)
     print_row(name, payload)
     print(f"by rule: {payload['recall_by_rule']}")
     if failures:
         print(f"WARNING {failures} response(s) failed to parse and were counted as 'no error'")
         for note in getattr(predict, "parse_failure_notes", [])[:3]:
+            print(f"  {note}")
+    if api_failures:
+        print(
+            f"WARNING {api_failures} item(s) hit a transient API failure, were skipped, and "
+            "count against recall - treat this run as incomplete"
+        )
+        for note in getattr(predict, "api_failure_notes", [])[:3]:
             print(f"  {note}")
     print(f"wrote {path}")
     return 0

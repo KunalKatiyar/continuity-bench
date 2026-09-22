@@ -325,6 +325,69 @@ def test_a_missing_key_file_leaves_the_sdk_to_use_the_environment():
     assert evaluate.read_key_file("~/.definitely-not-a-key-file-9f3a") is None
 
 
+class _Boom(evaluate.VerdictPredictor):
+    """A provider whose API call always raises the given exception."""
+
+    provider = "boom"
+
+    def __init__(self, exc, **kw):
+        super().__init__(model=kw.pop("model", "claude-opus-5"), **kw)
+        self.exc = exc
+
+    def complete(self, prompt):
+        raise self.exc
+
+
+class _FakeAPIError(Exception):
+    def __init__(self, message, body=None, status_code=None):
+        super().__init__(message)
+        self.body = body
+        self.status_code = status_code
+
+
+def test_a_quota_failure_is_fatal_so_a_long_run_stops_at_once():
+    exc = _FakeAPIError(
+        "Error code: 429 - you have no credits remaining",
+        body={"error": {"code": "insufficient_quota", "type": "insufficient_quota"}},
+    )
+    assert "insufficient_quota" in evaluate.classify_api_error(exc)
+    predictor = _Boom(exc)
+    try:
+        predictor(_item("p1", True, "r"))
+    except evaluate.RunAborted as abort:
+        assert "insufficient_quota" in str(abort)
+    else:
+        raise AssertionError("a quota failure should abort the run")
+
+
+def test_an_auth_failure_is_fatal():
+    assert evaluate.classify_api_error(_FakeAPIError("nope", status_code=401))
+    assert evaluate.classify_api_error(_FakeAPIError("nope", status_code=403))
+
+
+def test_a_transient_failure_skips_one_item_instead_of_losing_the_run():
+    predictor = _Boom(_FakeAPIError("Connection reset by peer", status_code=500))
+    prediction = predictor(_item("p1", True, "r"))
+    assert prediction.has_error is False
+    assert predictor.api_failures == 1
+    assert prediction.note.startswith("API FAILURE")
+
+
+def test_a_transient_failure_is_not_classified_fatal():
+    assert evaluate.classify_api_error(_FakeAPIError("overloaded", status_code=529)) is None
+    assert evaluate.classify_api_error(_FakeAPIError("timed out")) is None
+
+
+def test_skipped_items_still_count_against_recall():
+    """A skipped item must not be silently dropped, or a broken run looks clean."""
+    predictor = _Boom(_FakeAPIError("timed out"))
+    items = [_item("p1", True, "r"), _item("p1", False)]
+    scores = evaluate.score(items, predictor)
+    assert scores.recall == 0.0
+    assert scores.false_negative == 1
+    assert predictor.api_failures == 2
+
+
 if __name__ == "__main__":
     import _selftest
 
