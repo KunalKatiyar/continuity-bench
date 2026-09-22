@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Continuity Bench</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --surface: #fcfcfb; --plane: #f9f9f7; --ink: #0b0b0b; --ink-2: #52514e;
+  --muted: #898781; --grid: #e1e0d9; --axis: #c3c2b7; --mode: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --surface: #1a1a19; --plane: #0d0d0d; --ink: #ffffff; --ink-2: #c3c2b7;
+    --muted: #898781; --grid: #2c2c2a; --axis: #383835; --mode: dark;
+  }
+  :root:not([data-theme="light"]) .dot, :root:not([data-theme="light"]) .bar,
+  :root:not([data-theme="light"]) .swatch { --c: var(--cd); }
+}
+:root[data-theme="dark"] {
+  --surface: #1a1a19; --plane: #0d0d0d; --ink: #ffffff; --ink-2: #c3c2b7;
+  --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+}
+:root[data-theme="dark"] .dot, :root[data-theme="dark"] .bar,
+:root[data-theme="dark"] .swatch { --c: var(--cd); }
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--plane); color: var(--ink);
+  font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 1120px; margin: 0 auto; padding: 48px 16px 72px; }
+h1 { font-size: 1.75rem; letter-spacing: -0.02em; margin: 0 0 6px; }
+h2 { font-size: 1.05rem; letter-spacing: -0.01em; margin: 40px 0 4px; }
+p { color: var(--ink-2); margin: 0 0 8px; max-width: 70ch; }
+.sub { color: var(--muted); font-size: 0.875rem; }
+.panels { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 12px; }
+.panel {
+  background: var(--surface); border: 1px solid var(--grid); border-radius: 10px;
+  padding: 14px 10px 6px; flex: 1 1 380px; min-width: 0;
+}
+.panel h3 { margin: 0 0 2px 10px; font-size: 0.9rem; font-weight: 600; }
+.panel .note { margin: 0 0 4px 10px; font-size: 0.8rem; color: var(--muted); }
+.chart { width: 100%; height: auto; display: block; overflow: visible; }
+.grid { stroke: var(--grid); stroke-width: 1; }
+.axis { stroke: var(--axis); stroke-width: 1; }
+.floor { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.floor-label, .tick { fill: var(--muted); font-size: 10.5px; }
+.tick-y { text-anchor: end; }
+.tick-x { text-anchor: middle; }
+.axis-title { fill: var(--ink-2); font-size: 11.5px; text-anchor: middle; }
+.point-label { fill: var(--ink-2); font-size: 11px; }
+.bar-label { fill: var(--ink-2); font-size: 11.5px; text-anchor: end;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.bar-value { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.bar { fill: var(--c); }
+/* the aqua slot sits below 3:1 on the light surface, so every mark keeps a visible
+   direct label and the full table below acts as the relief the palette requires */
+.mark:hover .bar { opacity: 0.82; }
+.dot { fill: var(--c); }
+.ring { fill: var(--surface); }
+.mark { cursor: help; }
+.mark:hover .dot { r: 6.5; }
+.legend { display: flex; gap: 18px; flex-wrap: wrap; margin: 16px 0 0; font-size: 0.85rem; color: var(--ink-2); }
+.legend-item { display: inline-flex; align-items: center; gap: 7px; }
+.swatch { width: 11px; height: 11px; border-radius: 3px; background: var(--c); }
+table { border-collapse: collapse; width: 100%; margin-top: 12px; font-size: 0.85rem; }
+th, td { padding: 7px 10px; border-bottom: 1px solid var(--grid); text-align: left; }
+th { color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.strong { font-weight: 600; color: var(--ink); }
+td.name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }
+.empty { background: var(--surface); border: 1px dashed var(--axis); border-radius: 10px; padding: 24px; color: var(--muted); }
+@media (max-width: 640px) { main { padding: 28px 16px 48px; } .panel { flex: 1 1 100%; } }
+</style>
+</head>
+<body>
+<main>
+<h1>Continuity Bench</h1>
+<p>Detecting injected continuity errors in novel-length fiction. Every injected
+passage ships with the same passage unedited as its control, so the false-positive
+rate is measured on the same text distribution as the recall.</p>
+<p class="sub">The best free heuristic attack reaches J +0.066, so the corpus does not leak its own injection method. Integrity checks are not baselines: pair_diff_targeted reaches J +0.699 by exploiting the matched-pair design, which is why the released test split ships one half of each pair. No model has been run against it yet.</p>
+<div class="panels"><div class="panel"><h3>Discrimination</h3><p class="note">J = recall &minus; false-positive rate. Zero means the run separates nothing.</p><svg viewBox="0 0 560 294" role="img" aria-label="J = recall - FPR for each run" class="chart"><line x1="132.0" y1="14" x2="132.0" y2="254" class="grid"/><text x="132.0" y="272" class="tick tick-x">-0.01</text><line x1="206.0" y1="14" x2="206.0" y2="254" class="grid"/><text x="206.0" y="272" class="tick tick-x">0.19</text><line x1="280.0" y1="14" x2="280.0" y2="254" class="grid"/><text x="280.0" y="272" class="tick tick-x">0.39</text><line x1="354.0" y1="14" x2="354.0" y2="254" class="grid"/><text x="354.0" y="272" class="tick tick-x">0.60</text><line x1="428.0" y1="14" x2="428.0" y2="254" class="grid"/><text x="428.0" y="272" class="tick tick-x">0.80</text><line x1="502.0" y1="14" x2="502.0" y2="254" class="grid"/><text x="502.0" y="272" class="tick tick-x">1.00</text><text x="120" y="32.5" class="bar-label">pair_diff_targeted</text><g class="mark"><title>pair_diff_targeted - J = recall - FPR 0.699, recall 0.699, FPR 0.000, localization 1.000, $0.00000 per passage</title><rect x="136.0" y="20.0" width="255.6" height="17" rx="3" style="--c:#1baf7a;--cd:#199e70" class="bar"/></g><text x="398.7" y="32.5" class="bar-value">+0.699</text><text x="120" y="62.5" class="bar-label">pair_leak</text><g class="mark"><title>pair_leak - J = recall - FPR 0.121, recall 0.629, FPR 0.507, localization 1.000, $0.00000 per passage</title><rect x="136.0" y="50.0" width="44.4" height="17" rx="3" style="--c:#1baf7a;--cd:#199e70" class="bar"/></g><text x="187.4" y="62.5" class="bar-value">+0.121</text><text x="120" y="92.5" class="bar-label">corpus_prior</text><g class="mark"><title>corpus_prior - J = recall - FPR 0.066, recall 0.504, FPR 0.438, localization 0.277, $0.00000 per passage</title><rect x="136.0" y="80.0" width="24.2" height="17" rx="3" style="--c:#eb6834;--cd:#d95926" class="bar"/></g><text x="167.3" y="92.5" class="bar-value">+0.066</text><text x="120" y="122.5" class="bar-label">trait_disagreement</text><g class="mark"><title>trait_disagreement - J = recall - FPR 0.011, recall 0.011, FPR 0.000, localization 1.000, $0.00000 per passage</title><rect x="136.0" y="110.0" width="4.0" height="17" rx="3" style="--c:#eb6834;--cd:#d95926" class="bar"/></g><text x="147.1" y="122.5" class="bar-value">+0.011</text><text x="120" y="152.5" class="bar-label">always_clean</text><g class="mark"><title>always_clean - J = recall - FPR 0.000, recall 0.000, FPR 0.000, localization 0.000, $0.00000 per passage</title><rect x="136.0" y="140.0" width="1.5" height="17" rx="3" style="--c:#898781;--cd:#898781" class="bar"/></g><text x="143.0" y="152.5" class="bar-value">+0.000</text><text x="120" y="182.5" class="bar-label">always_error</text><g class="mark"><title>always_error - J = recall - FPR 0.000, recall 1.000, FPR 1.000, localization 0.018, $0.00000 per passage</title><rect x="136.0" y="170.0" width="1.5" height="17" rx="3" style="--c:#898781;--cd:#898781" class="bar"/></g><text x="143.0" y="182.5" class="bar-value">+0.000</text><text x="120" y="212.5" class="bar-label">rarest_name</text><g class="mark"><title>rarest_name - J = recall - FPR 0.000, recall 1.000, FPR 1.000, localization 0.276, $0.00000 per passage</title><rect x="136.0" y="200.0" width="1.5" height="17" rx="3" style="--c:#eb6834;--cd:#d95926" class="bar"/></g><text x="143.0" y="212.5" class="bar-value">+0.000</text><text x="120" y="242.5" class="bar-label">singleton_name</text><g class="mark"><title>singleton_name - J = recall - FPR -0.011, recall 0.967, FPR 0.978, localization 0.171, $0.00000 per passage</title><rect x="132.0" y="230.0" width="4.0" height="17" rx="3" style="--c:#eb6834;--cd:#d95926" class="bar"/></g><text x="143.0" y="242.5" class="bar-value">-0.011</text><line x1="136.0" y1="14" x2="136.0" y2="254" class="axis"/><text x="317.0" y="287" class="axis-title">J = recall - FPR</text></svg></div><div class="panel"><h3>F1, for comparison</h3><p class="note">Dashed line: flagging every passage scores 0.667 here while discriminating nothing. This is why F1 is not the headline.</p><svg viewBox="0 0 560 294" role="img" aria-label="F1 for each run" class="chart"><line x1="132.0" y1="14" x2="132.0" y2="254" class="grid"/><text x="132.0" y="272" class="tick tick-x">0.00</text><line x1="206.0" y1="14" x2="206.0" y2="254" class="grid"/><text x="206.0" y="272" class="tick tick-x">0.20</text><line x1="280.0" y1="14" x2="280.0" y2="254" class="grid"/><text x="280.0" y="272" class="tick tick-x">0.40</text><line x1="354.0" y1="14" x2="354.0" y2="254" class="grid"/><text x="354.0" y="272" class="tick tick-x">0.60</text><line x1="428.0" y1="14" x2="428.0" y2="254" class="grid"/><text x="428.0" y="272" class="tick tick-x">0.80</text><line x1="502.0" y1="14" x2="502.0" y2="254" class="grid"/><text x="502.0" y="272" class="tick tick-x">1.00</text><line x1="378.7" y1="14" x2="378.7" y2="254" class="floor"/><text x="120" y="32.5" class="bar-label">pair_diff_targeted</text><g class="mark"><title>pair_diff_targeted - F1 0.823, recall 0.699, FPR 0.000, localization 1.000, $0.00000 per passage</title><rect x="132.0" y="20.0" width="304.3" height="17" rx="3" style="--c:#1baf7a;--cd:#199e70" class="bar"/></g><text x="443.3" y="32.5" class="bar-value">0.823</text><text x="120" y="62.5" class="bar-label">pair_leak</text><g class="mark"><title>pair_leak - F1 0.589, recall 0.629, FPR 0.507, localization 1.000, $0.00000 per passage</title><rect x="132.0" y="50.0" width="217.8" height="17" rx="3" style="--c:#1baf7a;--cd:#199e70" class="bar"/></g><text x="356.8" y="62.5" class="bar-value">0.589</text><text x="120" y="92.5" class="bar-label">corpus_prior</text><g class="mark"><title>corpus_prior - F1 0.519, recall 0.504, FPR 0.438, localization 0.277, $0.00000 per passage</title><rect x="132.0" y="80.0" width="192.0" height="17" rx="3" style="--c:#eb6834;--cd:#d95926" class="bar"/></g><text x="331.0" y="92.5" class="bar-value">0.519</text><text x="120" y="122.5" class="bar-label">trait_disagreement</text><g class="mark"><title>trait_disagreement - F1 0.022, recall 0.011, FPR 0.000, localization 1.000, $0.00000 per passage</title><rect x="132.0" y="110.0" width="8.1" height="17" rx="3" style="--c:#eb6834;--cd:#d95926" class="bar"/></g><text x="147.1" y="122.5" class="bar-value">0.022</text><text x="120" y="152.5" class="bar-label">always_clean</text><g class="mark"><title>always_clean - F1 0.000, recall 0.000, FPR 0.000, localization 0.000, $0.00000 per passage</title><rect x="132.0" y="140.0" width="1.5" height="17" rx="3" style="--c:#898781;--cd:#898781" class="bar"/></g><text x="139.0" y="152.5" class="bar-value">0.000</text><text x="120" y="182.5" class="bar-label">always_error</text><g class="mark"><title>always_error - F1 0.667, recall 1.000, FPR 1.000, localization 0.018, $0.00000 per passage</title><rect x="132.0" y="170.0" width="246.7" height="17" rx="3" style="--c:#898781;--cd:#898781" class="bar"/></g><text x="385.7" y="182.5" class="bar-value">0.667</text><text x="120" y="212.5" class="bar-label">rarest_name</text><g class="mark"><title>rarest_name - F1 0.667, recall 1.000, FPR 1.000, localization 0.276, $0.00000 per passage</title><rect x="132.0" y="200.0" width="246.7" height="17" rx="3" style="--c:#eb6834;--cd:#d95926" class="bar"/></g><text x="385.7" y="212.5" class="bar-value">0.667</text><text x="120" y="242.5" class="bar-label">singleton_name</text><g class="mark"><title>singleton_name - F1 0.657, recall 0.967, FPR 0.978, localization 0.171, $0.00000 per passage</title><rect x="132.0" y="230.0" width="243.0" height="17" rx="3" style="--c:#eb6834;--cd:#d95926" class="bar"/></g><text x="382.0" y="242.5" class="bar-value">0.657</text><line x1="132.0" y1="14" x2="132.0" y2="254" class="axis"/><text x="317.0" y="287" class="axis-title">F1</text></svg></div></div><p class="sub">Every run so far is free, so there is no cost axis to draw yet. The cost-vs-quality scatter this benchmark is built around appears once a paid model run lands.</p><div class="legend"><span class="legend-item"><span class="swatch" style="--c:#eb6834;--cd:#d95926"></span>Free heuristic</span><span class="legend-item"><span class="swatch" style="--c:#1baf7a;--cd:#199e70"></span>Integrity check</span><span class="legend-item"><span class="swatch" style="--c:#898781;--cd:#898781"></span>Trivial floor</span></div><h2>All runs</h2><p class="sub">544 items from 27 novels, corpus continuity_v0.jsonl</p><table><thead><tr><th>predictor</th><th>J</th><th>F1</th><th>precision</th><th>recall</th><th>FPR</th><th>localization</th><th>$/passage</th><th>items</th></tr></thead><tbody><tr><td class="name">pair_diff_targeted</td><td class="num strong">+0.699</td><td class="num">0.823</td><td class="num">1.000</td><td class="num">0.699</td><td class="num">0.000</td><td class="num">1.000</td><td class="num">$0.00000</td><td class="num">544</td></tr><tr><td class="name">pair_leak</td><td class="num strong">+0.121</td><td class="num">0.589</td><td class="num">0.553</td><td class="num">0.629</td><td class="num">0.507</td><td class="num">1.000</td><td class="num">$0.00000</td><td class="num">544</td></tr><tr><td class="name">corpus_prior</td><td class="num strong">+0.066</td><td class="num">0.519</td><td class="num">0.535</td><td class="num">0.504</td><td class="num">0.438</td><td class="num">0.277</td><td class="num">$0.00000</td><td class="num">544</td></tr><tr><td class="name">trait_disagreement</td><td class="num strong">+0.011</td><td class="num">0.022</td><td class="num">1.000</td><td class="num">0.011</td><td class="num">0.000</td><td class="num">1.000</td><td class="num">$0.00000</td><td class="num">544</td></tr><tr><td class="name">always_clean</td><td class="num strong">+0.000</td><td class="num">0.000</td><td class="num">0.000</td><td class="num">0.000</td><td class="num">0.000</td><td class="num">0.000</td><td class="num">$0.00000</td><td class="num">544</td></tr><tr><td class="name">always_error</td><td class="num strong">+0.000</td><td class="num">0.667</td><td class="num">0.500</td><td class="num">1.000</td><td class="num">1.000</td><td class="num">0.018</td><td class="num">$0.00000</td><td class="num">544</td></tr><tr><td class="name">rarest_name</td><td class="num strong">+0.000</td><td class="num">0.667</td><td class="num">0.500</td><td class="num">1.000</td><td class="num">1.000</td><td class="num">0.276</td><td class="num">$0.00000</td><td class="num">544</td></tr><tr><td class="name">singleton_name</td><td class="num strong">-0.011</td><td class="num">0.657</td><td class="num">0.497</td><td class="num">0.967</td><td class="num">0.978</td><td class="num">0.171</td><td class="num">$0.00000</td><td class="num">544</td></tr></tbody></table>
+</main>
+</body>
+</html>

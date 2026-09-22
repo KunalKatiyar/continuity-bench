@@ -81,7 +81,8 @@ def test_character_swap_inserts_an_absent_character():
         "novel_persons": bench.Counter({"Margaret": 400, "Hollis": 90}),
         "novel_genders": {"Margaret": "f", "Hollis": "f"},
         "alias_pairs": set(),
-        "context_text": text,
+        "local_counts": bench.name_counts(text),
+        "nearby_names": set(bench.name_counts(text)),
     }
     hit = bench.rule_character_swap(text, _rng(), ctx)
     assert hit is not None
@@ -99,7 +100,10 @@ def test_character_swap_skips_characters_present_nearby():
         "novel_persons": bench.Counter({"Margaret": 400, "Hollis": 90}),
         "novel_genders": {"Margaret": "f", "Hollis": "f"},
         "alias_pairs": set(),
-        "context_text": text + " A page later, Hollis came up the lane with the dog at his heel.",
+        "local_counts": bench.name_counts(text),
+        "nearby_names": set(
+            bench.name_counts(text + " A page later, Hollis came up the lane with the dog at his heel.")
+        ),
     }
     assert bench.rule_character_swap(text, _rng(), ctx) is None
 
@@ -167,7 +171,9 @@ def test_passage_around_keeps_a_distant_anchor_as_long_range():
     paras = [f"paragraph {i} " + "filler text to clear the minimum length bar. " * 3 for i in range(40)]
     full, starts = bench.join_paragraphs(paras)
     target = full.index("paragraph 30")
-    hit = bench.Hit("r", "t", target, target + 9, "paragraph", "PARA", "d", anchor=starts[2])
+    hit = bench.Hit(
+        "r", "t", target, target + 9, "paragraph", "PARA", "d", anchor=starts[2], long_range_ok=True
+    )
     lo, hi, text, local, scope = bench.passage_around(
         full, paras, starts, hit, max_paragraphs=12, pad=4, max_chars=10**6
     )
@@ -249,7 +255,8 @@ def test_character_swap_will_not_split_a_full_name():
         "novel_persons": bench.Counter({"Copperfield": 400, "Traddles": 90}),
         "novel_genders": {"Copperfield": "m", "Traddles": "m"},
         "alias_pairs": set(),
-        "context_text": text,
+        "local_counts": bench.name_counts(text),
+        "nearby_names": set(bench.name_counts(text)),
     }
     assert bench.rule_character_swap(text, _rng(), ctx) is None
 
@@ -287,7 +294,8 @@ def test_character_swap_refuses_a_cross_gender_intruder():
         "novel_persons": bench.Counter({"Oliver": 400, "Nancy": 90}),
         "novel_genders": {"Oliver": "m", "Nancy": "f"},
         "alias_pairs": set(),
-        "context_text": text,
+        "local_counts": bench.name_counts(text),
+        "nearby_names": set(bench.name_counts(text)),
     }
     assert bench.rule_character_swap(text, _rng(), ctx) is None
 
@@ -308,7 +316,8 @@ def test_character_swap_refuses_the_victims_own_other_name():
         "novel_persons": bench.Counter({"Tom": 400, "Sawyer": 90}),
         "novel_genders": {"Tom": "m", "Sawyer": "m"},
         "alias_pairs": {frozenset(("Tom", "Sawyer"))},
-        "context_text": text,
+        "local_counts": bench.name_counts(text),
+        "nearby_names": set(bench.name_counts(text)),
     }
     assert bench.rule_character_swap(text, _rng(), ctx) is None
 
@@ -334,7 +343,8 @@ def test_character_swap_refuses_an_alias_of_someone_in_the_scene():
         "novel_persons": bench.Counter({"Dorian": 400, "Basil": 200, "Hallward": 90}),
         "novel_genders": {"Dorian": "m", "Basil": "m", "Hallward": "m"},
         "alias_pairs": {frozenset(("Basil", "Hallward"))},
-        "context_text": text,
+        "local_counts": bench.name_counts(text),
+        "nearby_names": set(bench.name_counts(text)),
     }
     assert bench.rule_character_swap(text, _rng(), ctx) is None
 
@@ -386,15 +396,93 @@ def test_validate_catches_an_unpaired_item():
     assert any("expected an injected/clean pair" in problem for problem in bench.validate_corpus(rows))
 
 
+def test_person_names_rejects_a_fragment_of_a_longer_name():
+    text = (
+        "In the end Van Helsing said it plainly, and Van Helsing said it twice over that night. "
+        "We had come from New York, and New York was far behind us now, and Van Helsing knew it. "
+        "But Seward said nothing of the kind, and Seward replied only when he was asked to."
+    )
+    persons = bench.person_names(text)
+    assert "Seward" in persons
+    for fragment in ("Van", "York"):
+        assert fragment not in persons, fragment
+
+
+def test_opaque_id_hides_the_err_and_clean_suffix():
+    err = bench.opaque_id("s", "pg1-p00001-err")
+    clean = bench.opaque_id("s", "pg1-p00001-clean")
+    for value in (err, clean):
+        assert "err" not in value and "clean" not in value
+        assert len(value) == 16
+    assert err != clean
+    assert err == bench.opaque_id("s", "pg1-p00001-err")
+    assert err != bench.opaque_id("other-seed", "pg1-p00001-err")
+
+
+def test_passage_around_refuses_a_long_range_hit_that_is_not_valid_at_distance():
+    paras = [f"paragraph {i} " + "filler text to clear the minimum length bar. " * 3 for i in range(40)]
+    full, starts = bench.join_paragraphs(paras)
+    target = full.index("paragraph 30")
+    hit = bench.Hit(
+        "r", "t", target, target + 9, "paragraph", "PARA", "d", anchor=starts[2], long_range_ok=False
+    )
+    assert bench.passage_around(full, paras, starts, hit, 12, 4, 10**6) is None
+
+
+def test_passage_around_preserves_fields_it_does_not_rewrite():
+    paras = [f"paragraph {i} " + "filler text to clear the minimum length bar. " * 3 for i in range(40)]
+    full, starts = bench.join_paragraphs(paras)
+    target = full.index("paragraph 20")
+    hit = bench.Hit(
+        "myrule", "mytype", target, target + 9, "paragraph", "PARA", "why", anchor=starts[18],
+        long_range_ok=True,
+    )
+    _, _, _, local, _ = bench.passage_around(full, paras, starts, hit, 12, 4, 10**6)
+    assert (local.rule, local.error_type, local.original, local.replacement, local.description) == (
+        "myrule",
+        "mytype",
+        "paragraph",
+        "PARA",
+        "why",
+    )
+    assert local.long_range_ok is True
+
+
+def test_the_filters_reject_world_knowledge_without_any_stoplist_help():
+    """Places, nationalities and nobility must not need a stoplist entry.
+
+    This is the test that keeps NOT_NAMES from growing by guesswork: every word here
+    is absent from the stoplist, so if person_names starts accepting one, the fix is a
+    filter, not a new word.
+    """
+    for token, text in (
+        (
+            "London",
+            "We came from London, and the London road was long, and London had been kind. "
+            "But Seward said as much himself, and Seward replied when he was asked to.",
+        ),
+        (
+            "Mars",
+            "The vegetable kingdom on Mars is blood-red, and in Mars the seeds were other. "
+            "But Ogilvy said as much himself, and Ogilvy replied again the following morning.",
+        ),
+        (
+            "Company",
+            "The Company had waited, and the Company was patient, and the Company said so. "
+            "But Marlow said as much himself, and Marlow replied when he was asked to.",
+        ),
+    ):
+        assert token not in bench.NOT_NAMES, f"{token} should not need a stoplist entry"
+        assert token not in bench.person_names(text), f"filters failed to reject {token}"
+
+
+def test_every_stoplist_entry_is_a_closed_class_word():
+    """No geography, nationalities or holidays - the filters handle those."""
+    for token in ("England", "English", "France", "French", "German", "London", "Christmas"):
+        assert token not in bench.NOT_NAMES, token
+
+
 if __name__ == "__main__":
-    failures = 0
-    for name, fn in sorted(vars().copy().items()):
-        if name.startswith("test_") and callable(fn):
-            try:
-                fn()
-                print(f"ok   {name}")
-            except AssertionError as exc:
-                failures += 1
-                print(f"FAIL {name}: {exc}")
-    print(f"\n{failures} failure(s)")
-    raise SystemExit(1 if failures else 0)
+    import _selftest
+
+    raise SystemExit(1 if _selftest.run(vars().copy()) else 0)

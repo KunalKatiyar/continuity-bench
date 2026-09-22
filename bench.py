@@ -30,7 +30,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -70,6 +70,14 @@ NAME_OWNER = re.compile(r"^[A-Z][a-z]+['\u2019]s$")
 
 HONORIFICS = {"Mr", "Mrs", "Ms", "Dr", "St", "Capt", "Col", "Gen", "Rev", "Prof", "Lt", "Sgt"}
 
+# Only closed classes belong in NOT_NAMES. Measured over the 35 novels, 12 of these
+# entries ever reject anything - "She", "They", "You" and a handful of vocatives - and
+# they are irreducible: a term of address sits in exactly the syntactic slot a name
+# sits in, so no distributional test on capitalisation can reach it. Places,
+# nationalities and nobility were in this list and were all inert: person_names'
+# speech, article and standalone filters already reject "London", "York", "Mars",
+# "Company" and "Sir" with no help. Reach for a filter, not a new word, when something
+# slips through.
 CLOSED_CLASS = """
     about above after again against all almost alone along already also although always among and
     another any anyone anything are around because been before being below beside besides between
@@ -86,16 +94,22 @@ CLOSED_CLASS = """
     whom whose why will with within without would yes yet you your yours yourself
 """
 
-TITLES_AND_PLACES = """
-    Almighty April August Aunt Captain Chapter Christmas Colonel Company December Doctor Dutch
-    Easter England English February France French Friday German God Heaven January July June
-    Lady London Lord Madam Madame Mama Mamma March Master May Meanwhile Miss Mistress Monday
-    Monseigneur Monsieur Mother November October Papa Parson Providence Reverend Saturday
-    September Signor Sire Squire Sunday Thursday Tuesday Uncle Wednesday
+TERMS_OF_ADDRESS = """
+    Almighty Aunt Captain Colonel Doctor Father God Heaven Lady Lord Madam Madame Mama
+    Mamma Master Mistress Miss Monseigneur Monsieur Mother Papa Parson Providence
+    Reverend Signor Sir Sire Squire Uncle
+"""
+
+CALENDAR = """
+    January February March April May June July August September October November
+    December Monday Tuesday Wednesday Thursday Friday Saturday Sunday
 """
 
 NOT_NAMES = frozenset(
-    [w.capitalize() for w in CLOSED_CLASS.split()] + TITLES_AND_PLACES.split() + sorted(HONORIFICS)
+    [word.capitalize() for word in CLOSED_CLASS.split()]
+    + TERMS_OF_ADDRESS.split()
+    + CALENDAR.split()
+    + sorted(HONORIFICS)
 )
 
 SPEECH_VERBS = (
@@ -112,6 +126,11 @@ DETERMINED = re.compile(r"\b(?:the|a|an|this|that|these|those|our|your)\s+$", re
 MALE_PRONOUNS = re.compile(r"\b(?:he|him|his|himself)\b", re.I)
 FEMALE_PRONOUNS = re.compile(r"\b(?:she|her|hers|herself)\b", re.I)
 PRONOUN_WINDOW = 80
+MIN_SPEECH_EVIDENCE = 2
+MAX_ARTICLED_SHARE = 0.1
+MIN_STANDALONE_SHARE = 0.3
+MIN_LOCAL_MENTIONS = 3
+MIN_NOVEL_MENTIONS = 20
 
 NAME_RE = re.compile(r"\b[A-Z][a-z]{2,}\b")
 QUOTE_ENDINGS = '.!?"”’\''
@@ -192,20 +211,22 @@ def paragraph_of(starts, offset):
     return bisect.bisect_right(starts, offset) - 1
 
 
-def name_counts(text):
+def name_counts_with_matches(text):
     """Count occurrences of likely proper names.
 
     A token qualifies as a name if it appears capitalised mid-sentence at least
     once; every occurrence of a qualifying token is then counted, including
-    sentence-initial ones.
+    sentence-initial ones. Returns (counts, matches) - the match list is handed back
+    so person_names can reuse the scan instead of making its own.
 
     ponytail: no NER model and no entity resolution. A capitalised adverb that
     happens to appear mid-sentence will be counted as a name; the count
     thresholds in rule_character_swap absorb that. Swap in spaCy or a
     coreference model if name precision starts costing corpus precision.
     """
+    matches = list(NAME_RE.finditer(text))
     confirmed = set()
-    for m in NAME_RE.finditer(text):
+    for m in matches:
         token = m.group(0)
         if token in NOT_NAMES or token in confirmed:
             continue
@@ -217,11 +238,13 @@ def name_counts(text):
             if not (prev[-1] == "." and tail and tail[-1] in HONORIFICS):
                 continue
         confirmed.add(token)
-    counts = Counter()
-    for m in NAME_RE.finditer(text):
-        if m.group(0) in confirmed:
-            counts[m.group(0)] += 1
-    return counts
+    counts = Counter(m.group(0) for m in matches if m.group(0) in confirmed)
+    return counts, matches
+
+
+def name_counts(text):
+    """Counts of likely proper names. See name_counts_with_matches."""
+    return name_counts_with_matches(text)[0]
 
 
 def _timeline_patterns():
@@ -279,7 +302,7 @@ def _trait_patterns():
 TRAIT_PATTERNS = tuple(_trait_patterns())
 
 
-def _same_colour(a, b):
+def same_colour(a, b):
     norm = {"gray": "grey"}
     a, b = a.lower(), b.lower()
     return norm.get(a, a) == norm.get(b, b)
@@ -309,7 +332,7 @@ def candidates_trait_flip(text, rng):
         occurrences = sorted(groups[key], key=lambda m: m.start())
         if len(occurrences) < 2:
             continue
-        alternatives = sorted(v for v in TRAIT_VALUES[noun] if not _same_colour(v, value))
+        alternatives = sorted(v for v in TRAIT_VALUES[noun] if not same_colour(v, value))
         for anchor, m in zip(occurrences, occurrences[1:]):
             replacement = rng.choice(alternatives)
             if m.group("value")[0].isupper():
@@ -339,24 +362,33 @@ def person_names(text):
     stoplist, evidence of speaking, and rejection of anything that regularly follows
     an article. Speaking is deliberately the only evidence accepted - acting admits
     planets and institutions, which act in prose all the time.
+
+    A fourth filter requires a name to stand alone a fair share of the time, which
+    is what separates a character from the fragment of a longer name: "Van" in "Van
+    Helsing", "York" in "New York" and "Sir" in "Sir Leicester" never appear on
+    their own, and injecting one of them produces gibberish.
     """
-    evidence, determined, totals = Counter(), Counter(), Counter()
+    evidence, determined, standalone = Counter(), Counter(), Counter()
     for pattern in (PERSON_AS_OBJECT, PERSON_AS_SUBJECT):
         for m in pattern.finditer(text):
             evidence[m.group("name")] += 1
-    counts = name_counts(text)
-    for m in NAME_RE.finditer(text):
+    counts, matches = name_counts_with_matches(text)
+    for m in matches:
         token = m.group(0)
         if token not in counts:
             continue
-        totals[token] += 1
-        if DETERMINED.search(text[max(0, m.start() - 8) : m.start()]):
+        before = text[max(0, m.start() - 20) : m.start()]
+        if DETERMINED.search(before[-8:]):
             determined[token] += 1
+        if not BLOCKED_BEFORE.search(before) and not BLOCKED_AFTER.match(text[m.end() : m.end() + 20]):
+            standalone[token] += 1
     return Counter(
         {
             name: count
             for name, count in counts.items()
-            if evidence[name] >= 2 and determined[name] <= 0.1 * totals[name]
+            if evidence[name] >= MIN_SPEECH_EVIDENCE
+            and determined[name] <= MAX_ARTICLED_SHARE * count
+            and standalone[name] >= MIN_STANDALONE_SHARE * count
         }
     )
 
@@ -424,15 +456,16 @@ def standalone_occurrences(text, name):
 def rule_character_swap(text, rng, ctx):
     """Drop a character who is absent from the scene into it, in place of one who is present."""
     persons, genders = ctx["novel_persons"], ctx["novel_genders"]
-    local = name_counts(text)
+    local, nearby = ctx["local_counts"], ctx["nearby_names"]
     present = sorted(
-        name for name, count in local.items() if count >= 3 and name in persons and name in genders
+        name
+        for name, count in local.items()
+        if count >= MIN_LOCAL_MENTIONS and name in persons and name in genders
     )
-    nearby = set(name_counts(ctx["context_text"]))
     absent = sorted(
         name
         for name, count in persons.items()
-        if count >= 20 and name not in nearby and name in genders
+        if count >= MIN_NOVEL_MENTIONS and name not in nearby and name in genders
     )
     if not present or not absent:
         return None
@@ -482,7 +515,11 @@ def passage_around(full, paras, starts, hit, max_paragraphs, pad, max_chars):
     when the anchor and the edit fit inside max_paragraphs, and "long_range" when the
     fact is established chapters before it is contradicted. Long-range items are the
     ones that cannot be solved by reading a single passage, so they are kept rather
-    than discarded. Returns None only when the span exceeds max_chars.
+    than discarded.
+
+    Returns None when the span exceeds max_chars, or when it would be long-range and
+    the hit is not valid at that distance - scope policy lives here, in the one
+    function that computes scope, rather than being re-derived by the caller.
     """
     first = paragraph_of(starts, hit.anchor)
     last = paragraph_of(starts, hit.start)
@@ -499,22 +536,13 @@ def passage_around(full, paras, starts, hit, max_paragraphs, pad, max_chars):
     else:
         scope = "long_range"
         lo, hi = max(0, first - 1), min(len(paras) - 1, last + 1)
+    if scope == "long_range" and not hit.long_range_ok:
+        return None
     base, end = starts[lo], starts[hi] + len(paras[hi])
     if end - base > max_chars:
         return None
-    text = full[base:end]
-    local = Hit(
-        hit.rule,
-        hit.error_type,
-        hit.start - base,
-        hit.end - base,
-        hit.original,
-        hit.replacement,
-        hit.description,
-        anchor=hit.anchor - base,
-        long_range_ok=hit.long_range_ok,
-    )
-    return lo, hi, text, local, scope
+    local = replace(hit, start=hit.start - base, end=hit.end - base, anchor=hit.anchor - base)
+    return lo, hi, full[base:end], local, scope
 
 
 def split_for(novel_id, test_every=4):
@@ -566,6 +594,21 @@ def item_pair(novel_id, passage_id, split, text, hit, n_paragraphs, scope="passa
 def novel_items(novel_id, paras, split, args):
     """Yield JSONL records for one novel, capped per rule to keep the corpus balanced."""
     full, starts = join_paragraphs(paras)
+    block_counts = {}
+
+    def block_names(index):
+        """Name counts for one stride-aligned block, computed once and reused.
+
+        Windows stride by a whole block, so each block is the local scene of one
+        window and part of the surrounding context of its neighbours. Without this
+        cache every block is scanned four times, which was the largest avoidable
+        cost in the build.
+        """
+        if index not in block_counts:
+            block = paras[index * args.window : (index + 1) * args.window]
+            block_counts[index] = name_counts("\n\n".join(block))
+        return block_counts[index]
+
     novel_persons = person_names(full)
     novel_genders = name_genders(full, novel_persons)
     novel_aliases = alias_pairs(full, novel_persons)
@@ -584,8 +627,6 @@ def novel_items(novel_id, paras, split, args):
             if carved is None:
                 continue
             lo, hi, text, local, scope = carved
-            if scope == "long_range" and not local.long_range_ok:
-                continue
             passage_id = f"{novel_id}-p{lo:05d}"
             used.update((first, last))
             per_rule[hit.rule] += 1
@@ -600,11 +641,15 @@ def novel_items(novel_id, paras, split, args):
         text = "\n\n".join(window)
         lo = max(0, index - args.window)
         hi = min(len(paras), index + 2 * args.window)
+        nearby = set()
+        for block in range(lo // args.window, -(-hi // args.window)):
+            nearby.update(block_names(block))
         ctx = {
             "novel_persons": novel_persons,
             "novel_genders": novel_genders,
             "alias_pairs": novel_aliases,
-            "context_text": "\n\n".join(paras[lo:hi]),
+            "local_counts": block_names(index // args.window),
+            "nearby_names": nearby,
         }
         passage_id = f"{novel_id}-p{index:05d}"
         hit = rule_character_swap(text, random.Random(f"{args.seed}:{passage_id}"), ctx)
@@ -758,6 +803,102 @@ def cmd_validate(args):
     return 1 if problems else 0
 
 
+def write_jsonl(path, records):
+    """Write records as JSON lines, keeping non-ASCII text as itself."""
+    with Path(path).open("w", encoding="utf-8") as fh:
+        for record in records:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def opaque_id(seed, passage_id):
+    """Stable, label-free public id for a passage.
+
+    The internal passage_id ends in -err or -clean, which would publish the answer
+    for every test item; the mapping back lives only in the held-back labels file.
+    """
+    return hashlib.sha1(f"{seed}:{passage_id}".encode()).hexdigest()[:16]
+
+
+def one_half_per_pair(rows, seed):
+    """Keep one half of each matched pair, chosen by hash of the pair id.
+
+    Publishing both halves of a pair is an answer key, and not a weak one: the two
+    texts are near-identical, so clustering them and diffing hands an attacker the
+    exact token to test, and the injected half is the one where that token appears
+    once while its counterpart appears often. Measured at J +0.699 against this
+    corpus, against the J +0.066 an attacker manages without the pair. Shipping one
+    half per pair removes the attack rather than arguing about its strength.
+
+    The cost is exact per-pair matching on the released test split; dev keeps both
+    halves, because its job is for humans to read. The property that matters - a
+    false-positive rate measured on the same passage pool as the recall - survives in
+    expectation, since each pair contributes one half drawn from that pool.
+    """
+    by_pair = defaultdict(list)
+    for row in rows:
+        by_pair[row["pair_id"]].append(row)
+    kept = []
+    for pair_id, group in sorted(by_pair.items()):
+        group.sort(key=lambda row: row["passage_id"])
+        digest = int(hashlib.sha1(f"{seed}:half:{pair_id}".encode()).hexdigest(), 16)
+        kept.append(group[digest % len(group)])
+    return kept
+
+
+def cmd_export(args):
+    """Write the release files: labeled dev, unlabeled test passages, held-back labels.
+
+    Three things protect the test split, because the matched-pair design is itself an
+    answer key: labels are held back, ids are opaque so the internal -err / -clean
+    suffix does not publish the answer, and only one half of each pair ships at all
+    (see one_half_per_pair for the measurement that forced the last one). The dev
+    split ships whole and fully labeled, because its purpose is for people to read.
+    """
+    rows = [json.loads(line) for line in Path(args.corpus).open(encoding="utf-8")]
+    problems = validate_corpus(rows)
+    if problems and not args.force:
+        print(f"refusing to export: {len(problems)} validation problem(s); run `validate`")
+        return 1
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    dev = [row for row in rows if row["split"] == "dev"]
+    test = one_half_per_pair([row for row in rows if row["split"] == "test"], args.seed)
+    rng = random.Random(args.seed)
+    rng.shuffle(dev)
+    rng.shuffle(test)
+    public_fields = ("novel_id", "context_scope", "n_paragraphs", "text")
+    write_jsonl(out / "dev.jsonl", dev)
+    write_jsonl(
+        out / "test_passages.jsonl",
+        (
+            {
+                "passage_id": opaque_id(args.seed, row["passage_id"]),
+                **{key: row[key] for key in public_fields},
+            }
+            for row in test
+        ),
+    )
+    write_jsonl(
+        out / "test_labels.jsonl",
+        (
+            {
+                "passage_id": opaque_id(args.seed, row["passage_id"]),
+                "source_passage_id": row["passage_id"],
+                "pair_id": row["pair_id"],
+                "error_type": row["error_type"],
+                "injected_location": row["injected_location"],
+                "ground_truth": row["ground_truth"],
+            }
+            for row in test
+        ),
+    )
+    print(f"dev.jsonl            {len(dev):4} labeled items ({len(dev) // 2} pairs)")
+    print(f"test_passages.jsonl  {len(test):4} passages, one half per pair, opaque ids")
+    print(f"test_labels.jsonl    {len(test):4} labels - HOLD BACK, do not publish")
+    print(f"\nwrote to {out}")
+    return 0
+
+
 def cmd_sample(args):
     """Print injected items with the edit marked, so a human can check the labels."""
     items = []
@@ -818,6 +959,13 @@ def main(argv=None):
     validate.add_argument("corpus", nargs="?", default=str(DEFAULT_CORPUS))
     validate.add_argument("--limit", type=int, default=20, help="problems to print")
     validate.set_defaults(func=cmd_validate)
+
+    export = sub.add_parser("export", help="write the publishable release files")
+    export.add_argument("corpus", nargs="?", default=str(DEFAULT_CORPUS))
+    export.add_argument("--out", default=str(ROOT / "release"))
+    export.add_argument("--seed", default="release-v0")
+    export.add_argument("--force", action="store_true", help="export even if validation fails")
+    export.set_defaults(func=cmd_export)
 
     sample = sub.add_parser("sample", help="print injected items with the edit marked")
     sample.add_argument("corpus", nargs="?", default=str(DEFAULT_CORPUS))

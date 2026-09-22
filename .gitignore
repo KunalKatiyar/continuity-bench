@@ -1,6 +1,7 @@
 corpus/raw/
 corpus/*.jsonl
 corpus/books_fetched.tsv
+release/
 __pycache__/
 *.pyc
 .venv/
