@@ -1,0 +1,6 @@
+corpus/raw/
+corpus/*.jsonl
+corpus/books_fetched.tsv
+__pycache__/
+*.pyc
+.venv/
