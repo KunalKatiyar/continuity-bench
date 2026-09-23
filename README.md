@@ -262,6 +262,25 @@ Three things this baseline taught the harness, each of which changed it:
   key, so registering one briefly put a 58-minute llama run inside the suite that is
   supposed to be instant and free.
 
+### First baseline result
+
+`llama3.1:8b`, full 410-item dev split, greedy decoding:
+
+| J | 95% CI | recall | FPR | F1 | localization | cost |
+|---|---|---|---|---|---|---|
+| **+0.005** | −0.039 to +0.048 | 0.981 | 0.976 | 0.663 | 0.114 | $0.00 |
+
+**It has no discrimination on this task at all.** It flags 98% of injected passages and
+98% of clean ones, which is the `always_error` strategy — and its F1 of 0.663 sits on
+the flag-everything 0.667 exactly as that implies. Localization is 0.114 against a
+~0.083 chance rate for a 12-paragraph passage, so it is not finding the right paragraph
+either.
+
+The interval matters as much as the number: at ±0.044 this is a *measured null*, not an
+inconclusive run. The earlier 20-pair attempt also straddled zero, but at ±0.23, which
+established nothing. The leaderboard marks those two cases differently (&#8226; versus
+&#8225;) because they mean opposite things.
+
 Measured here (RTX 1000 Ada, 6 GB): `llama3.1:8b` runs 6.4 s/item warm, ~44 min for the
 410-item dev split. Local inference costs wall clock and hardware rather than API money,
 so `cost_usd` is a true 0.0 and `median_latency_s` is the number to read beside it.

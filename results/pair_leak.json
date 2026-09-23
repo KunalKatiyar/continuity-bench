@@ -14,6 +14,7 @@
     0.2357
   ],
   "youden_j_significant": true,
+  "youden_j_verdict": "effect",
   "recall_ci95": [
     0.5698,
     0.6839

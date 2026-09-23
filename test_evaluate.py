@@ -445,6 +445,24 @@ def test_every_heuristic_is_genuinely_free():
             assert predict.needs_key is False, name
 
 
+def test_a_tight_interval_around_zero_is_a_measured_null_not_an_unknown():
+    """A narrow CI containing zero and a wide one mean opposite things."""
+    assert evaluate.j_verdict(-0.039, 0.048) == "no_effect"
+    assert evaluate.j_verdict(-0.438, 0.271) == "inconclusive"
+    assert evaluate.j_verdict(0.30, 0.55) == "effect"
+    assert evaluate.j_verdict(-0.55, -0.30) == "effect"
+
+
+def test_the_verdict_travels_into_the_results_record():
+    items = []
+    for n in range(40):
+        items += [_item(f"p{n}", True, "r"), _item(f"p{n}", False)]
+    summary = evaluate.score(items, _fixed(True, 3)).summary()
+    assert summary["youden_j"] == 0.0
+    assert summary["youden_j_verdict"] in ("no_effect", "inconclusive")
+    assert summary["youden_j_significant"] is False
+
+
 if __name__ == "__main__":
     import _selftest
 

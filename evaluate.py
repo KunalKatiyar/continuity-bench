@@ -47,6 +47,21 @@ class Prediction:
     note: str = ""
 
 
+INCONCLUSIVE_WIDTH = 0.20
+
+
+def j_verdict(low, high):
+    """Classify a J interval: an effect, a measured null, or not enough data.
+
+    A tight interval around zero and a wide one around zero mean opposite things - the
+    first establishes that a model does not discriminate, the second establishes
+    nothing at all - and collapsing them into "not significant" hides the difference.
+    """
+    if low > 0 or high < 0:
+        return "effect"
+    return "inconclusive" if (high - low) > INCONCLUSIVE_WIDTH else "no_effect"
+
+
 def wilson_interval(successes, trials, z=1.96):
     """95% Wilson score interval for a proportion, or (0, 0) with no trials.
 
@@ -142,6 +157,7 @@ class Scores:
             "youden_j": round(self.youden_j, 4),
             "youden_j_ci95": [round(j_lo, 4), round(j_hi, 4)],
             "youden_j_significant": bool(j_lo > 0 or j_hi < 0),
+            "youden_j_verdict": j_verdict(j_lo, j_hi),
             "recall_ci95": [round(v, 4) for v in self.recall_interval],
             "fpr_ci95": [round(v, 4) for v in self.fpr_interval],
             "false_positive_rate": round(self.false_positive_rate, 4),
@@ -819,7 +835,11 @@ def write_results(name, corpus, items, scores, extra=None, kind="attack"):
 
 def print_row(name, summary):
     lo, hi = summary["youden_j_ci95"]
-    mark = "" if summary["youden_j_significant"] else "  (CI spans 0)"
+    mark = {
+        "effect": "",
+        "no_effect": "  (no discrimination, tight CI)",
+        "inconclusive": "  (inconclusive, CI too wide)",
+    }[summary["youden_j_verdict"]]
     print(
         f"{name:22} J {summary['youden_j']:+.3f} [{lo:+.3f},{hi:+.3f}]  "
         f"F1 {summary['f1']:.3f}  R {summary['recall']:.3f}  "

@@ -220,15 +220,22 @@ def bars(rows, y_key, y_label, floor=None):
     return "".join(parts)
 
 
+VERDICT_MARK = {"effect": "", "no_effect": " &#8226;", "inconclusive": " &#8225;"}
+
+
 def ci95(row):
-    """The J interval as text, flagged when it spans zero and so proves nothing."""
+    """The J interval as text, marked by what it establishes.
+
+    A tight interval around zero establishes that a run does not discriminate; a wide
+    one establishes nothing. They are marked differently because they mean opposite
+    things.
+    """
     interval = row.get("youden_j_ci95")
     if not interval:
         return "&mdash;"
     lo, hi = interval
-    spans_zero = not row.get("youden_j_significant", lo > 0 or hi < 0)
-    text = f"{lo:+.3f} to {hi:+.3f}"
-    return f"{text} &#8225;" if spans_zero else text
+    verdict = row.get("youden_j_verdict", "effect" if (lo > 0 or hi < 0) else "inconclusive")
+    return f"{lo:+.3f} to {hi:+.3f}{VERDICT_MARK.get(verdict, '')}"
 
 
 def per_passage(row):
@@ -429,8 +436,9 @@ def render(rows, corpus_stats):
             + "<h2>All runs</h2>"
             + f'<p class="sub">{esc(corpus_stats)}</p>'
             + table(rows)
-            + '<p class="sub">&#8225; the 95% interval spans zero, so that run does not '
-            "establish any discrimination either way &mdash; usually too few items.</p>"
+            + '<p class="sub">&#8226; the interval is tight and contains zero: that run is '
+            "measured to have no discrimination. &#8225; the interval is wide and contains "
+            "zero: that run establishes nothing either way, usually too few items.</p>"
         )
     status = headline(rows)
     return f"""<!doctype html>
