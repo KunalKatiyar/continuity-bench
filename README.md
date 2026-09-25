@@ -1,415 +1,286 @@
 # continuity-bench
 
-[Live leaderboard](https://kunalkatiyar.github.io/continuity-bench-leaderboard/) &middot;
+[Live leaderboard](https://kunalkatiyar.github.io/continuity-bench-leaderboard/) ·
 [leaderboard repo](https://github.com/KunalKatiyar/continuity-bench-leaderboard)
 
-A benchmark for detecting continuity errors in novel-length fiction, and (later) a
-Jev-powered editing pipeline that tries to match full-context LLM accuracy at a
-fraction of the cost.
+Can a model tell when a novel contradicts itself? And what does one catch cost?
 
-**Status: Phase 1 built, no model has been run against it yet.** The corpus, the
-evaluation harness, the adversarial checks and the leaderboard all work end to end.
-The paid baselines need an API key (see below).
-
-```bash
-./run_all_checks.sh      # self-checks, deterministic rebuild, validation, leakage attack, site
-```
-
-## What exists
-
-Three stdlib-only files. The only optional dependency is the `anthropic` SDK, imported
-lazily and needed solely for the paid predictor.
+This is a benchmark that injects continuity errors into public-domain fiction at known
+locations, plus a three-stage editing harness built around Jev, TypeSafe's non-generative
+classifier. The bet behind the harness: checking "does this paragraph contradict a fact
+we already know?" is a closed question, and closed questions are cheap. Only the ends
+need a real LLM.
 
 ```bash
-python3 bench.py fetch        # download the novels in books.tsv from Project Gutenberg
-python3 bench.py build        # inject labeled errors -> corpus/continuity_v0.jsonl
-python3 bench.py validate     # check every label, span and pair
-python3 bench.py stats        # label/split/scope distribution
-python3 bench.py sample --rule character_swap -n 5    # eyeball items with the edit marked
-python3 bench.py export       # release files, with test labels held back
-
-python3 evaluate.py list                      # registered predictors
-python3 evaluate.py attack                    # every free heuristic vs the corpus
-python3 evaluate.py run llm --limit 20 --yes   # a paid model run (needs credentials)
-
-python3 build_site.py         # regenerate site/index.html from results/*.json
+./run_all_checks.sh     # 112 self-checks, deterministic rebuild, validation, leakage attack, site
 ```
 
-Current corpus: **272 matched pairs / 544 items from 27 novels.** Every injected item
-ships with the same passage unedited as its control, so the false-positive rate is
-measured on exactly the same text distribution as the recall. Splits are per novel, so
-no novel appears in both `dev` and `test`. The build is deterministic given `--seed` —
-the same inputs produce a byte-identical corpus.
+## Where it stands
 
-## Why the headline metric is not F1
+The corpus, the harness, the adversarial checks and the leaderboard all work. One model
+has been run against it end to end. The Jev runs are written and tested but unrun,
+because TypeSafe closed new signups before I could get a key.
 
-On a balanced paired corpus, **flagging every passage scores precision 0.500, recall
-1.000 and therefore F1 0.667 while discriminating nothing at all.** Three of the free
-heuristics land in exactly that band. F1 is reported, but the metric that means
-something here is
+The first baseline is not flattering to the model. `llama3.1:8b`, full 410-item dev
+split, greedy decoding:
 
-> **J = recall − false-positive rate** (Youden's J) — 0 for any constant strategy, 1 for
-> a perfect one.
+| J | 95% CI | recall | FPR | F1 | localization |
+|---|---|---|---|---|---|
+| +0.005 | −0.039 to +0.048 | 0.981 | 0.976 | 0.663 | 0.114 |
 
-Balanced accuracy is deliberately *not* reported: it is exactly `(1 + J) / 2`, so it
-would be a second column that can never disagree with the first.
+It flags 98% of the injected passages and 98% of the clean ones. That is the
+"say yes to everything" strategy with extra steps, and its F1 of 0.663 lands on the
+flag-everything score of 0.667 exactly as you would expect. Localization is 0.114
+against a chance rate near 0.083, so it isn't finding the right paragraph either.
 
-The project brief asks for a cost-vs-F1 chart as the release headline, and the site
-draws it, with the 0.667 flag-everything line marked so no point below it can look good.
+That result is the clearest argument for the metric choice below.
 
-## Is the corpus actually measuring reasoning?
+## F1 is the wrong headline here
 
-`evaluate.py attack` exists to answer that before anyone spends money. It runs every
-zero-cost predictor, including two that model an adversary who downloaded the dataset:
+Every injected passage in this corpus is paired with the same passage left alone. On a
+balanced paired set, flagging everything gets you precision 0.500, recall 1.000, and so
+F1 0.667, while separating nothing whatsoever. An 8B model scored precisely that. A
+leaderboard reporting F1 alone would have shown it as roughly competitive.
+
+So the number that leads is **J = recall − false-positive rate**. Zero for any constant
+strategy, 1 for a perfect one. F1 is still in the table, with the 0.667 line drawn on the
+chart so nothing below it can look respectable.
+
+Balanced accuracy is deliberately absent. It works out to exactly `(1 + J) / 2`, so it
+would be a column that can never disagree with the one beside it.
+
+Every run also carries a 95% Wilson interval, and the leaderboard distinguishes two
+things that look identical if you only report significance: an interval that is tight
+around zero (the model genuinely doesn't discriminate) and one that is wide around zero
+(you didn't run enough items to know). My first 20-pair run was the second kind, ±0.23,
+and I nearly reported it as a finding.
+
+## Does the benchmark measure reasoning, or just leak?
+
+`evaluate.py attack` answers that before anyone spends money, by throwing every
+zero-cost heuristic at the corpus, including two that model someone who downloaded the
+whole dataset.
 
 | attack | J | what it exploits |
 |---|---|---|
-| `corpus_prior` | **+0.066** | pools every passage of a novel, then flags names that are locally rare but novel-wide common — exactly what `character_swap` creates |
-| `singleton_name` | −0.011 | flags a passage holding a name mentioned once beside frequent names |
-| `trait_disagreement` | +0.011 | flags two different colours describing one feature |
-| `rarest_name` / `always_error` | +0.000 | constant strategies; F1 0.667, discrimination zero |
-| `narration_person` | +0.000 | flags narration mixing first and third person (see the POV note below) |
-| `pair_leak` *(diagnostic)* | +0.121, **localization 1.000** | diffs the two halves of a matched pair |
-| `pair_diff_targeted` *(diagnostic)* | **+0.699**, FPR 0.000 | diffs the pair, then tests only the token that changed |
+| `corpus_prior` | **+0.066** | pools novel-wide name counts, flags names that are locally rare but common elsewhere in the book |
+| `trait_disagreement` | +0.011 | two different colours describing one feature |
+| `narration_person` | +0.000 | narration mixing first and third person |
+| `rarest_name`, `always_error` | +0.000 | constant strategies; F1 0.667, discrimination zero |
+| `singleton_name` | −0.011 | a name mentioned once beside frequent ones |
+| `pair_leak` *(diagnostic)* | +0.121, loc **1.000** | diffs the two halves of a matched pair |
+| `pair_diff_targeted` *(diagnostic)* | **+0.699**, FPR 0.000 | diffs the pair, then tests only the changed token |
 
-**The best genuine attack reaches J +0.066, so discrimination is not leaked** — an
-injected intruder is statistically indistinguishable from the minor characters real
-prose mentions once. Diagnostics are excluded from that verdict: they exploit the
-release format rather than the text, and are kept registered so a mitigation cannot
-quietly regress.
+The best honest attack gets J +0.066. An injected intruder turns out to be
+statistically indistinguishable from the minor characters real prose mentions once,
+which is the property that makes the corpus worth running a model against.
 
-**The matched-pair design is itself an answer key, and that took three goes to close.**
+### The matched-pair design is an answer key, and I got it wrong twice
 
-1. `pair_leak` localizes with **loc 1.000** by diffing the two halves of a pair. First
-   mitigation: hold back the test labels.
-2. That wasn't enough — the internal `passage_id` ends in `-err` or `-clean`, so the
-   export was publishing the answer for every test item *in the id itself*. Second
-   mitigation: opaque hashed ids.
-3. Still not enough. I claimed the residual was harmless because "without labels a
-   submitter cannot tell which half carries the error, so detection stays at chance."
-   **That claim was wrong, and measuring it proved it wrong:** diffing a pair hands over
-   the exact token that changed, which turns `corpus_prior`'s blind search across a whole
-   passage into one targeted test — the injected half is the one whose differing token
-   appears once while its counterpart appears often. `pair_diff_targeted` scores
-   **J +0.699 at FPR 0.000**, an order of magnitude past every blind attack.
+Diagnostics are listed separately because they cheat the release format rather than read
+the text. Closing that took three attempts:
 
-Final mitigation: `bench.py export` ships **one half of each test pair and no more**, so
-there is nothing left to diff (verified: zero recoverable pairs in the published file).
-The cost is exact per-pair matching on the released test split — dev keeps both halves,
-since its job is for humans to read — and 67 published test passages instead of 134. The
-property that matters, a false-positive rate measured on the same passage pool as the
-recall, survives in expectation because each pair contributes one half drawn from that
-pool. `release/` is gitignored so the held-back labels cannot be published by accident.
+First I held back the test labels. Not enough: the internal `passage_id` ends in `-err`
+or `-clean`, so the export was publishing the answer in the id itself.
 
-## Item schema
+Then I made the ids opaque hashes, and argued the rest was harmless, because without
+labels you still can't tell which half of a pair carries the error. Detection stays at
+chance, I said.
 
-```json
-{
-  "novel_id": "pg1260",
-  "passage_id": "pg1260-p00456-err",
-  "pair_id": "pg1260-p00456",
-  "split": "dev",
-  "context_scope": "passage",
-  "n_paragraphs": 12,
-  "text": "...the passage, with the error injected...",
-  "error_type": "fact_contradiction",
-  "injected_location": {
-    "paragraph_index": 5, "char_start": 2317, "char_end": 2322,
-    "original": "Bessie", "replacement": "Burns", "anchor_paragraph_index": 0
-  },
-  "ground_truth": {"has_error": true, "rule": "character_swap", "description": "..."}
-}
+That was wrong, and measuring it is what showed me. Diffing a pair hands you the exact
+token that changed, which turns a blind search across a whole passage into one targeted
+test: the injected half is the one whose changed token appears once while its counterpart
+appears often. `pair_diff_targeted` scores **J +0.699 at FPR 0.000**, an order of
+magnitude past anything working blind.
+
+The fix is structural. `bench.py export` ships one half of each test pair and no more, so
+there is nothing left to diff, verified by checking that zero pairs survive in the
+published file. Both attacks stay registered so the mitigation can't quietly regress.
+Cost: 67 published test passages instead of 134, and no exact per-pair matching on the
+test split. Dev keeps both halves, since its job is for humans to read.
+
+## The Jev editing harness
+
+Phase 2, in `pipeline.py`:
+
+```
+chapter text  --[LLM, once per chapter]-->  story state
+paragraph     --[Jev, once per paragraph]-> contradicts state? yes/no + confidence
+flagged only  --[LLM, once per flag]------> confirm, write the author's note
 ```
 
-`context_scope` is `passage` when the contradicted fact is stated in the same passage,
-and `long_range` when it was established chapters earlier — the case that cannot be
-solved by reading one passage, and the reason the Phase 2 story-state pipeline exists.
+Verification is closed: does this paragraph contradict something already in state? That
+is what a System One model answers in one parallel pass, for input tokens alone, at
+$0.042 per million with no output charge. Generation is only needed to build the state
+and to explain a real hit. So the expensive model touches a small slice of the text.
 
-## The injection rules, and what they actually yield
+Escalation keys on Jev's calibrated confidence, not just its answer. A confident "no" is
+dropped. An unsure "no" gets escalated, because unsure is exactly where a cheap gate
+fails, and silently dropping those would hide the pipeline's real failure mode.
+`escalation_rate` is recorded per run, and it is the number the whole cost argument rests
+on.
+
+Two entries reach the leaderboard: `jev`, the naive Jev-only pass the brief asks to be
+reported honestly, and `jev_hybrid`, the actual proposal.
+
+```bash
+.venv/bin/python evaluate.py run jev        --split dev --yes   # ~$0.03 for 410 items
+.venv/bin/python evaluate.py run jev_hybrid --split dev --yes
+```
+
+Credentials come from `TYPESAFE_API_KEY` or `~/.typesafe-key`.
+
+### Running the architecture without Jev
+
+Signups are closed, so neither of those can run here yet. `pipeline.LocalVerifier` is a
+drop-in with the same interface, and `hybrid_local` runs all three stages on local models
+with no keys:
+
+```bash
+.venv/bin/python evaluate.py run hybrid_local --model llama3.1:8b --split dev --limit 10
+```
+
+This tells you the harness works on real items, what the escalation rate is, and whether
+gate-plus-escalation beats one whole-passage pass by the same model. Every interface Jev
+touches gets exercised, so swapping it back in is one line.
+
+It tells you nothing about Jev's accuracy or calibration, and nothing about cost. A local
+gate costs a model call per paragraph, which is the exact cost Jev exists to remove, and
+a generative model's self-reported confidence is not a calibrated probability. Runs
+record `projected_jev_gate_usd`, which applies TypeSafe's published rate to measured gate
+tokens. A projection, labelled as one.
+
+## The corpus
+
+272 matched pairs, 544 items, 27 novels. Deterministic given `--seed`: same inputs,
+byte-identical output, which held across Python 3.12 and 3.13.
+
+```bash
+python3 bench.py fetch      # pull the novels in books.tsv from Project Gutenberg
+python3 bench.py build      # inject labeled errors -> corpus/continuity_v0.jsonl
+python3 bench.py validate   # check every label, span and pair
+python3 bench.py sample --rule character_swap -n 5   # eyeball items with the edit marked
+python3 bench.py export     # release files, test labels held back
+```
 
 | rule | error type | items | what it does |
 |---|---|---|---|
-| `character_swap` | fact_contradiction | 266 | puts a character who is absent from the scene into it, in place of one who is present |
+| `character_swap` | fact_contradiction | 266 | drops a character who is absent from the scene into it, replacing one who is present |
 | `trait_flip` | fact_contradiction | 3 | flips the later of two matching eye/hair colour phrases with the same owner |
-| `timeline_weekday` | timeline | 3 | breaks a day sequence the passage itself states |
+| `timeline_weekday` | timeline | 3 | breaks a day sequence the passage states itself |
 
-**The corpus is 98% one error type, and that is a finding rather than a bug to paper
-over.** Measured across all 35 downloaded novels (~70,000 paragraphs):
+Yes, that is 98% one error type, and no, it isn't for want of trying. Across all 35
+downloaded novels, roughly 70,000 paragraphs:
 
 | pattern | occurrences | per novel |
 |---|---|---|
 | day-of-week mentions | 924 | 26.4 |
 | …forming a checkable `DAY … connective … DAY` sequence | 3 | 0.1 |
 | eye/hair colour phrases | 425 | 12.1 |
-| …repeated with the same owner, so a flip is a contradiction | 32 | 0.9 |
-| month + season co-occurrence | 25 | 0.7 (and mostly the modal "may", not May) |
+| …repeated with the same owner, so a flip contradicts something | 32 | 0.9 |
+| month + season co-occurrence | 25 | 0.7 (mostly the modal "may", not May) |
 | `Name's <kinship>` | 1 | 0.0 |
 
-Rule-based injection over public-domain fiction supports exactly one high-volume error
-type plus a long tail. The facts regex can verify are not repeated often enough in real
-prose. Balanced volume needs an LLM injector that *writes* the contradiction — that is
-step 1b, and it is a measured conclusion rather than a guess.
+Regex injection over real prose supports one high-volume error type and a long tail. The
+facts a regex can verify simply aren't repeated often enough in actual novels. Balanced
+volume needs an LLM that writes the contradiction instead of pattern-matching one, which
+is the next step.
 
-## Why there is no POV-slip error type
+### Why there's no POV-slip error type
 
-The brief lists POV/tense slip as one of three candidate error types. It is
-implementable and high-yield: switching a narrated `he/she <verb>` to `I <verb>` in a
-third-person novel gives **17,258 injection sites across 14 novels**, and a build
-produced 180 items — which would have taken the corpus from 98% one error type to a
-59/40 split across two.
+The brief lists POV/tense slip as a candidate, and it works: switching a narrated
+"he/she <verb>" to "I <verb>" in a third-person novel gives 17,258 injection sites across
+14 novels, and a build produced 180 items. That would have taken the corpus from 98% one
+type to a 59/40 split.
 
-**It was dropped because a five-line regex detects 100% of them.** The
-`narration_person` attack finds every injected item (recall 1.000) and pushed the
-overall free-heuristic J from +0.066 to **+0.350**, past the leakage threshold. The
-reason is structural: the injected "I" is the only first-person narration token in an
-otherwise pure third-person passage, so it is a lexical outlier rather than a
-contradiction anything has to reason about. Matching the clean controls on that
-statistic is not available either — third-person novels sit at a 0.003 narrated-"I"
-ratio, so passages that already contain one barely exist.
+I dropped it because five lines of regex detect 100% of them. The `narration_person`
+attack catches every injected item and pushed the overall free-heuristic J from +0.066 to
++0.350. The reason is structural: the injected "I" is the only first-person narration
+token in an otherwise pure third-person passage, so it's a lexical outlier, not a
+contradiction anyone has to reason about. Matching the controls on that statistic isn't
+available either, since third-person novels sit at a 0.003 narrated-"I" ratio.
 
-With the rule removed, `narration_person` collapses to J +0.000 (recall 0.456 against
-FPR 0.456 — noise), confirming it was detecting only the artifact.
+Remove the rule and `narration_person` collapses to J +0.000, which confirms it was only
+ever detecting the artifact.
 
-The conclusion is worth more than the 180 items: **a POV slip is surface-detectable
-and belongs in a linter, not in a benchmark meant to measure state tracking.** The
-error types that need a story-state model are the ones where the contradicted fact is
-elsewhere in the text. That is an argument for the Phase 2 premise, and an argument
-against one third of the brief's error-type list.
+The conclusion is worth more than the 180 items: a POV slip is surface-detectable and
+belongs in a linter, not in a benchmark meant to measure state tracking.
 
-## Running the paid baselines
+## Running models
 
-Three providers, **one shared prompt and one shared JSON schema** — a cross-provider
-comparison means nothing if each provider is judged on a different prompt, so both
-subclass `VerdictPredictor` and implement only the API call.
-
-Set-up, once. The free path is stdlib-only, but the paid predictors need SDKs, and a
-bare `python3` on this machine resolves to a sibling project's `.venv` (no pip):
+Four providers, one shared prompt and one shared JSON schema. Two providers judged on
+two different prompts is not a comparison, so they all subclass `VerdictPredictor` and
+implement only the API call.
 
 ```bash
-~/.pyenv/versions/3.12.10/bin/python -m venv .venv
-.venv/bin/python -m pip install openai anthropic
-```
-
-`run_all_checks.sh` picks up `.venv` automatically when it exists. Then:
-
-```bash
+~/.pyenv/versions/3.12.10/bin/python -m venv .venv      # a bare python3 here resolves
+.venv/bin/python -m pip install openai anthropic        # to a sibling project's venv
 
 .venv/bin/python evaluate.py run local  --model llama3.1:8b --split dev      # free, ~44 min
-.venv/bin/python evaluate.py run openai --model gpt-4o-mini --limit 20 --yes  # ~$0.01
-.venv/bin/python evaluate.py run openai --model gpt-4.1 --split dev --yes     # ~$1.48
-.venv/bin/python evaluate.py run llm --model claude-opus-5 --split dev --yes  # ~$8.16
-.venv/bin/python evaluate.py run openai --model gpt-5 --input-rate 1.25 --output-rate 10 --yes
+.venv/bin/python evaluate.py run openai --model gpt-4o-mini --limit 20 --yes # ~$0.01
+.venv/bin/python evaluate.py run llm    --model claude-opus-5 --split dev --yes
 ```
 
-Credentials, in the order each SDK looks: `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`, then
-`~/.anthropic-key` / `~/.openai-key` (mode 600). The key file exists so a key never has
-to be pasted into a chat. Write it from an interactive shell, where `read` has a TTY:
+Keys resolve from `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`, then `~/.openai-key` /
+`~/.anthropic-key`, so nothing has to be pasted into a terminal.
 
-```bash
-read -rs KEY && printf '%s' "$KEY" > ~/.openai-key && chmod 600 ~/.openai-key && unset KEY
-```
+Cost of a full dev pass (410 items, ~607k input tokens): Jev $0.03, `gpt-4o-mini` $0.11,
+`gpt-4.1` $1.48, `claude-haiku-4-5` $1.63, `claude-sonnet-5` $3.26, `claude-opus-5` $8.16.
+Local models are free but not fast: `llama3.1:8b` runs 6.4 s/item on an RTX 1000.
 
-Estimated cost of a full dev-split pass (410 items, ~607k input tokens): `gpt-4o-mini`
-$0.11, `gpt-4.1` $1.48, `claude-haiku-4-5` $1.63, `claude-sonnet-5` $3.26,
-`claude-opus-5` $8.16.
+Spending guards, since this costs money: a paid run refuses to start without `--yes` and
+prints the item count first. Cost comes from the API's own usage, never an estimate. An
+unlisted model reports $0.00 loudly rather than inventing a rate, because a wrong rate
+quietly corrupts the cost axis this whole project is about. Fatal errors like quota or
+auth stop the run immediately with one line instead of 400 tracebacks; transient ones
+skip a single item, still count against recall, and get reported.
 
-Guards, because this spends real money:
+One more thing learned the hard way: local runs pin temperature and seed. Before that,
+the identical 40 items scored J −0.100 and then J +0.250 on consecutive runs. Hosted
+frontier models reject sampling parameters, which is the other reason every run ships
+with a confidence interval.
 
-- A paid run refuses to start without `--yes`, printing the item count first.
-- Cost comes from the API's own `usage`, never an estimate.
-- **An unlisted model reports $0.00 and says so loudly** rather than inventing a rate —
-  a wrong rate silently corrupts the cost axis, which is this benchmark's headline
-  claim. Pass `--input-rate` / `--output-rate` (USD per million tokens) to record the
-  real cost. The rates in `MODEL_PRICING_USD_PER_MTOK` should be checked against current
-  pricing pages before any cost number is published.
-- Responses are constrained with a strict JSON schema; one that still fails to parse is
-  counted, reported with its text, and not silently scored as "no error".
-- **API failures are split into fatal and transient.** A quota or auth error affects
-  every remaining item, so the run aborts immediately with a one-line reason and writes
-  no results file, rather than printing 400 tracebacks. Anything else skips that one
-  item, still counts against recall, and is reported loudly — a full dev pass is ~15
-  minutes, and one flaky response should not throw it away.
+## What this doesn't show
 
-An API subscription is not API credit: **ChatGPT Plus does not cover the OpenAI API**,
-and Claude Pro/Max does not cover the Anthropic API. Both bill prepaid credits from
-their developer platform separately. A valid key with a zero balance fails with
-`429 insufficient_quota`, which reads like a broken key but is a billing state.
+Injected errors are not natural errors. This measures detection of programmatically
+injected contradictions, and nothing else.
 
-The predictor's system prompt states that about half the passages are clean. That is
-true of this corpus and stops a model's prior from dominating the result, but it is a
-prompt choice worth recording — a deployment on a real manuscript has a far lower base
-rate.
+The novels are famous, so they're in every frontier model's training data. A model might
+remember that the eyes were blue rather than reason about the passage. Per-novel recall
+is in every result file so memorisation shows up as variance. Swapping in obscure texts
+is the real fix, and it isn't done.
 
-## The Jev editing harness
+`trait_flip` trusts the owner token ("her blue eyes") as its entire referent check. That
+holds inside a passage and fails across a novel, so pronoun-owned traits are restricted
+to passage scope and only possessive names ("Anna's hair") are allowed at long range. Two
+women in one passage both described as "her blue eyes" would still be mislabeled.
 
-Phase 2, implemented in `pipeline.py`:
+Name detection is heuristic. A name counts as a person if it appears capitalised
+mid-sentence, speaks at least twice, rarely follows an article, and stands alone a fair
+share of the time. Each of those filters exists because of a real failure: `The`,
+`Master`, `She`, `Company`, `Mars`, `Mrs`, `Sir`, `Van` (from "Van Helsing") and `York`
+(from "New York") all got injected as characters before they went in. Nicknames that
+never appear adjacent, "Lizzy" for "Elizabeth", can still slip through.
 
-```
-chapter text  --[LLM, once per chapter]-->  story state (facts, traits, timeline)
-paragraph     --[Jev, once per paragraph]-> contradicts state? yes/no + confidence
-flagged only  --[LLM, once per flag]------> confirm, and write the author's note
-```
+The stoplist is only for closed classes. Of 289 entries, 12 ever rejected anything, and
+none of the geography, nationalities or nobility titles did; the distributional filters
+already handle those. Those 22 words are gone and a test now asserts that `London`, `Mars`
+and `Company` are rejected with no list help, so the answer to "should I add a word?" is
+"no, fix a filter."
 
-The bet is that verification is a *closed* question — "does this paragraph contradict a
-fact already in state?" — which is what a System One model answers in one parallel pass
-for input-token cost alone. Generation is needed only at the two ends: building the
-state, and explaining a real hit. So the expensive model touches a small fraction of the
-text.
-
-Escalation keys on Jev's **calibrated confidence**, not just its answer. A confident
-"no" is dropped; an unsure "no" is escalated, because an unsure answer is exactly where
-a cheap gate is worst. `escalation_rate` is recorded per run, and it is the number that
-decides whether the cost story holds.
-
-Two predictors reach the leaderboard:
-
-- **`jev`** — the naive Jev-only pass the brief asks for explicitly, and asks to be
-  reported honestly. A bare passage is not the story state Jev is meant to check
-  against, so this is expected to underperform; it is the control for the hybrid.
-- **`jev_hybrid`** — the proposal itself, and the run the public leaderboard leads with.
-  Its cost includes the extraction call, which on a real manuscript amortises across a
-  whole chapter but on a single benchmark passage does not — so the figure is an upper
-  bound on production cost.
-
-```bash
-.venv/bin/python evaluate.py run jev        --split dev --yes   # ~$0.03
-.venv/bin/python evaluate.py run jev_hybrid --split dev --yes
-```
-
-Credentials: `TYPESAFE_API_KEY`, or `~/.typesafe-key`.
-
-### Running the architecture without Jev
-
-TypeSafe closed new Jev signups, so the two predictors above cannot be run here yet.
-`pipeline.LocalVerifier` is a drop-in stand-in with the same interface, and
-`hybrid_local` runs the whole three-stage harness on local models with no keys at all:
-
-```bash
-.venv/bin/python evaluate.py run hybrid_local --model llama3.1:8b --split dev --limit 10
-```
-
-**What that establishes:** the harness runs on real corpus items, at a measured
-escalation rate, and whether gate-plus-escalation beats a single whole-passage pass by
-the same model. Every interface Jev touches is exercised, so restoring Jev is one line.
-
-**What it cannot establish:** anything about Jev's accuracy or calibration, and nothing
-about cost. A local gate costs a model call per paragraph, which is precisely the cost
-Jev exists to remove, and a generative model's self-reported confidence is not a
-calibrated probability. Runs record `projected_jev_gate_usd`, which applies TypeSafe's
-published $0.042/MTok to the *measured* gate tokens — a projection, labelled as one,
-not a measurement.
-
-## The local open-LLM baseline
-
-`run local` talks to [Ollama](https://ollama.com)'s OpenAI-compatible endpoint, so it
-needs no key and costs no API money — this covers the brief's open-LLM baseline and
-makes the whole pipeline testable without credits.
-
-```bash
-ollama pull llama3.1:8b
-.venv/bin/python evaluate.py run local --model llama3.1:8b --split dev
-```
-
-Three things this baseline taught the harness, each of which changed it:
-
-- **Local runs pin sampling; hosted runs cannot.** Consecutive runs of the identical 40
-  items first scored J −0.100, then J +0.250 — a 0.35 swing from ollama's default
-  temperature alone. `LocalPredictor` now uses greedy decoding with a fixed seed, and
-  two runs come out identical on every metric. Hosted frontier models reject sampling
-  parameters outright, so their runs cannot be pinned this way.
-- **Every run reports a 95% Wilson interval** for recall, FPR and J, and the leaderboard
-  flags any run whose J interval spans zero. On 20 pairs that interval is roughly ±0.23,
-  wider than most differences anyone would want to claim.
-- **`attack` filters on kind, not on whether a key is needed.** A local model needs no
-  key, so registering one briefly put a 58-minute llama run inside the suite that is
-  supposed to be instant and free.
-
-### First baseline result
-
-`llama3.1:8b`, full 410-item dev split, greedy decoding:
-
-| J | 95% CI | recall | FPR | F1 | localization | cost |
-|---|---|---|---|---|---|---|
-| **+0.005** | −0.039 to +0.048 | 0.981 | 0.976 | 0.663 | 0.114 | $0.00 |
-
-**It has no discrimination on this task at all.** It flags 98% of injected passages and
-98% of clean ones, which is the `always_error` strategy — and its F1 of 0.663 sits on
-the flag-everything 0.667 exactly as that implies. Localization is 0.114 against a
-~0.083 chance rate for a 12-paragraph passage, so it is not finding the right paragraph
-either.
-
-The interval matters as much as the number: at ±0.044 this is a *measured null*, not an
-inconclusive run. The earlier 20-pair attempt also straddled zero, but at ±0.23, which
-established nothing. The leaderboard marks those two cases differently (&#8226; versus
-&#8225;) because they mean opposite things.
-
-Measured here (RTX 1000 Ada, 6 GB): `llama3.1:8b` runs 6.4 s/item warm, ~44 min for the
-410-item dev split. Local inference costs wall clock and hardware rather than API money,
-so `cost_usd` is a true 0.0 and `median_latency_s` is the number to read beside it.
-
-## Known limitations
-
-- **Training-data contamination.** All 35 novels are famous and certainly in every
-  frontier model's training data; a model may "remember" the original text rather than
-  reason about the passage. `recall_by_novel` is reported in every results JSON so
-  memorisation shows up as per-novel variance. Swapping in obscure Gutenberg texts is
-  the real fix and is not done yet.
-- **Injected errors are not natural errors.** The benchmark measures detection of
-  *injected* errors and the README should keep saying so.
-- **No coreference.** `trait_flip` trusts the owner token ("her blue eyes") as the whole
-  referent check. That holds inside a passage and fails across a novel, so pronoun-owned
-  traits are restricted to `passage` scope and only possessive names ("Anna's hair") are
-  allowed at long range. Two women in one passage both described as "her blue eyes"
-  would still be mislabeled.
-- **Name detection is heuristic.** A name qualifies as a person if it appears capitalised
-  mid-sentence, *speaks* at least twice, rarely follows an article, and stands alone a
-  fair share of the time. Every one of those filters exists because of a real failure:
-  `The`, `Master`, `She`, `Company`, `Mars`, `Mrs`, `Sir`, `Van` (from "Van Helsing") and
-  `York` (from "New York") all got injected as characters before they went in. Nickname
-  aliases that never appear adjacent ("Lizzy" for "Elizabeth") can still slip through,
-  which is what `sample` and `validate` are for.
-- **The stoplist is only for closed classes.** Measured over the 35 novels, just **12 of
-  289** stoplist entries ever rejected anything (`She`, `They`, `You` and a handful of
-  vocatives), and none of the geography, nationalities or nobility titles did — the
-  distributional filters already handle those. Those 22 words are gone and a test now
-  asserts the filters reject `London`, `Mars` and `Company` with no list help, so the
-  answer to "should I add a word?" is "no, fix a filter." The residue is irreducible: a
-  term of address sits in exactly the syntactic slot a name sits in, so no test on
-  capitalisation can reach it.
-- **`character_swap` enforces gender agreement** between the removed and inserted
-  character, and refuses an intruder who is an alias of the victim or of anyone in the
-  scene. Without the first, surrounding pronouns disagree and the item is solvable by
-  grammar; without the second, `Sawyer` replaces `Tom` and the "error" is not one.
-- **Only two error types have meaningful volume**, and POV slip was tried and rejected
-  on evidence — see below.
-
-## Build order
-
-1. ~~Error-injection script + clean/injected corpus~~ — done, with the yield caveat above.
-1b. **LLM injector** for balanced error-type volume — the measured next step.
-2. ~~Evaluation harness, metrics, adversarial floor checks, leaderboard~~ — done.
-   **Paid baselines still to run** (frontier LLM, open LLM, naive Jev).
-3. Extraction pass (LLM) + story-state schema.
-4. Jev verification pass wired to story-state.
-5. LLM escalation/explanation pass.
-6. Re-run the full benchmark with the hybrid pipeline; publish the cost-vs-F1 chart.
-7. CLI for a user-supplied manuscript.
+The build takes about 23 seconds for 35 novels, roughly 70% of it two candidate-scan
+regexes dragging lazy spans across whole novels. Pre-filtering on a cheap anchor token
+would bring it into single digits. Not done: correctness of the labels mattered more than
+the wall clock.
 
 ## Notes
 
-- `books.tsv` is the input list; titles there are labels only. `fetch` writes the title it
-  actually found to `corpus/books_fetched.tsv`, so a wrong Gutenberg id surfaces instead
-  of silently mislabeling a novel. All 35 ids verified correct.
-- `corpus/raw/`, the built `.jsonl` and `release/` are gitignored. Rebuild with `fetch`
-  and `build`.
-- The build takes ~23s for 35 novels. About 70% of that is the two candidate-scan
-  regexes (`candidates_trait_flip`, `candidates_timeline`) dragging lazy `.{0,400}?`
-  spans across each whole novel. Pre-filtering on a cheap anchor token (`eyes?|hair`,
-  or the weekday alternation) and running the expensive patterns only near hits would
-  bring it into single digits. Not done: the build is run rarely and correctness of the
-  labels mattered more than its wall clock.
-- Jev is a proprietary hosted API (TypeSafe AI, released 2026-09-15). The pipeline code
-  here is open source; the model is not. Its pricing is the reason the architecture is
-  worth trying: **$0.042 per million input tokens with no output cost**, because it
-  generates no tokens. A full 410-item dev pass through the Jev-only baseline costs
-  **$0.026**.
+`books.tsv` is the input list, and its titles are labels only. `fetch` writes the title it
+actually found to `corpus/books_fetched.tsv`, so a wrong Gutenberg id surfaces instead of
+silently mislabeling a novel. All 35 ids check out.
+
+`corpus/raw/`, the built `.jsonl` and `release/` are gitignored. Rebuild with `fetch` and
+`build`.
+
+Jev is proprietary and hosted (TypeSafe AI, released 2026-09-15). The pipeline code here
+is open; the model isn't.
