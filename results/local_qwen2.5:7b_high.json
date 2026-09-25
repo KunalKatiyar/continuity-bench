@@ -1,0 +1,65 @@
+{
+  "predictor": "local_qwen2.5:7b_high",
+  "kind": "model",
+  "corpus": "continuity_v0.jsonl",
+  "items": 410,
+  "pairs": 205,
+  "novels": 20,
+  "model": "qwen2.5:7b",
+  "effort": "high",
+  "precision": 0.5,
+  "recall": 0.0683,
+  "f1": 0.1202,
+  "youden_j": 0.0,
+  "youden_j_ci95": [
+    -0.0702,
+    0.0702
+  ],
+  "youden_j_significant": false,
+  "youden_j_verdict": "no_effect",
+  "recall_ci95": [
+    0.0411,
+    0.1114
+  ],
+  "fpr_ci95": [
+    0.0411,
+    0.1114
+  ],
+  "false_positive_rate": 0.0683,
+  "localization": 0.1429,
+  "true_positive": 14,
+  "false_positive": 14,
+  "true_negative": 191,
+  "false_negative": 191,
+  "cost_usd": 0.0,
+  "input_tokens": 566145,
+  "output_tokens": 13253,
+  "median_latency_s": 5.9076,
+  "recall_by_rule": {
+    "character_swap": 0.0647,
+    "timeline_weekday": 0.0,
+    "trait_flip": 0.3333
+  },
+  "recall_by_novel": {
+    "pg1023": 0.1538,
+    "pg120": 0.0833,
+    "pg121": 0.1667,
+    "pg1260": 0.0,
+    "pg1342": 0.1111,
+    "pg1400": 0.0769,
+    "pg155": 0.0,
+    "pg1661": 0.0,
+    "pg174": 0.1111,
+    "pg2701": 0.0,
+    "pg271": 0.0,
+    "pg2852": 0.0,
+    "pg43": 0.5,
+    "pg514": 0.0,
+    "pg74": 0.0,
+    "pg76": 0.1667,
+    "pg766": 0.0769,
+    "pg768": 0.0,
+    "pg84": 0.0833,
+    "pg98": 0.0833
+  }
+}

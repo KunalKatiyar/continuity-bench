@@ -1,5 +1,8 @@
 # continuity-bench
 
+[Live leaderboard](https://kunalkatiyar.github.io/continuity-bench-leaderboard/) &middot;
+[leaderboard repo](https://github.com/KunalKatiyar/continuity-bench-leaderboard)
+
 A benchmark for detecting continuity errors in novel-length fiction, and (later) a
 Jev-powered editing pipeline that tries to match full-context LLM accuracy at a
 fraction of the cost.

@@ -671,7 +671,7 @@ establishes nothing either way, usually too few items.</p>
 {CAVEATS}
 <footer class="foot">
 <p>Benchmark code, corpus builder and evaluation harness:
-<a href="https://github.com/kunal-katiyar/continuity-bench">continuity-bench</a>.
+<a href="https://github.com/KunalKatiyar/continuity-bench">continuity-bench</a>.
 Every number here is reproducible with <code>run_all_checks.sh</code> plus the run
 command recorded in each result file.</p>
 </footer>
