@@ -310,15 +310,23 @@ def test_openai_request_uses_a_strict_json_schema_response_format():
     assert round(prediction.cost_usd, 8) == round(20 / 1e6 * 2.0 + 4 / 1e6 * 8.0, 8)
 
 
-def test_both_paid_predictors_are_registered_and_flagged():
-    for name in ("llm", "openai"):
-        assert evaluate.PREDICTORS[name].needs_key is True
-        assert evaluate.PREDICTORS[name].kind == "model"
+def test_every_paid_predictor_is_registered_and_flagged():
+    for name in ("llm", "openai", "jev", "jev_hybrid"):
+        assert evaluate.PREDICTORS[name].needs_key is True, name
+        assert evaluate.PREDICTORS[name].kind == "model", name
+    assert evaluate.PREDICTORS["local"].needs_key is False
     assert all(
         not predict.needs_key
         for name, predict in evaluate.PREDICTORS.items()
-        if name not in ("llm", "openai")
+        if predict.kind in evaluate.HEURISTIC_KINDS
     )
+
+
+def test_jev_is_priced_input_only_because_it_generates_nothing():
+    jev = evaluate.PREDICTORS["jev"]
+    assert jev.rates == (0.042, 0.0)
+    assert jev.price(1_000_000, 1_000_000) == 0.042
+    assert round(jev.price(607_000, 0), 4) == 0.0255
 
 
 def test_a_missing_key_file_leaves_the_sdk_to_use_the_environment():

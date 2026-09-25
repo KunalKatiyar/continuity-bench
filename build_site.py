@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """Generate the static leaderboard from results/*.json.
 
+Two outputs from one generator, so they cannot drift:
+  --out site/index.html                 the working view, for whoever is building this
+  --public --out <repo>/index.html      the shareable leaderboard, for hosting
+
+The public view leads with the Jev pipeline, which is the claim the project exists to
+test: that a cheap non-generative classifier plus selective LLM escalation matches
+full-context LLM accuracy for a fraction of the cost. Until a Jev run exists the hero
+says so rather than showing a placeholder number.
+
 Writes site/index.html - one self-contained file, no build step and no JavaScript
 libraries, so it can be served straight from GitHub Pages.
 
@@ -396,7 +405,101 @@ def headline(rows):
     return f'<p class="sub">{esc(" ".join(parts))}</p>'
 
 
-def render(rows, corpus_stats):
+JEV_PREFIX = "jev"
+
+
+def jev_row(rows):
+    """The Jev pipeline's run, if one has been recorded."""
+    return next((r for r in rows if r["predictor"].startswith(JEV_PREFIX)), None)
+
+
+def best_of_kind(rows, kind):
+    return max(
+        (r for r in rows if r["kind"] == kind), key=lambda r: r["youden_j"], default=None
+    )
+
+
+def hero(rows):
+    """The headline block: the Jev claim, measured or openly not yet measured."""
+    jev = jev_row(rows)
+    models = [r for r in rows if r["kind"] == "model"]
+    if jev is None:
+        body = (
+            '<p class="hero-claim">Can a cheap non-generative classifier, escalating to an '
+            "LLM only when unsure, match full-context LLM accuracy on continuity errors "
+            "for a fraction of the cost?</p>"
+            '<p class="hero-status">Not yet measured. No Jev run has been recorded, so '
+            "there is no number here to read. The baselines below are what exists.</p>"
+        )
+        return f'<section class="hero pending"><h2>The question</h2>{body}</section>'
+    best_model = max(
+        (r for r in models if not r["predictor"].startswith(JEV_PREFIX)),
+        key=lambda r: r["youden_j"],
+        default=None,
+    )
+    lo, hi = jev["youden_j_ci95"]
+    lines = [
+        f'<div class="hero-number">J {jev["youden_j"]:+.3f}'
+        f'<span class="hero-ci">95% CI {lo:+.3f} to {hi:+.3f}</span></div>',
+        f'<p class="hero-claim">{esc(jev["predictor"])} &mdash; '
+        f'${per_passage(jev):.5f} per passage.</p>',
+    ]
+    if best_model:
+        ratio = (
+            per_passage(best_model) / per_passage(jev)
+            if per_passage(jev) > 0
+            else float("inf")
+        )
+        cheaper = f"{ratio:.0f}x cheaper" if ratio != float("inf") else "at no API cost"
+        lines.append(
+            f'<p class="hero-status">Best non-Jev model: {esc(best_model["predictor"])} at '
+            f'J {best_model["youden_j"]:+.3f}, ${per_passage(best_model):.5f} per passage '
+            f"&mdash; the Jev pipeline is {cheaper}.</p>"
+        )
+    return f'<section class="hero"><h2>The Jev pipeline</h2>{"".join(lines)}</section>'
+
+
+METHOD = """
+<section class="method">
+<h2>How this is measured</h2>
+<p>Continuity errors are injected into passages of public-domain novels at a known
+location, and <strong>every injected passage ships with the same passage unedited as its
+control</strong>, so the false-positive rate is measured on exactly the same text as the
+recall. Splits are assigned per novel, so no novel appears in both dev and test.</p>
+<p><strong>The headline metric is J = recall &minus; false-positive rate</strong>, not F1.
+On a balanced paired corpus, flagging every passage scores precision 0.500, recall 1.000
+and therefore F1 0.667 while discriminating nothing at all &mdash; a real model has
+scored exactly that here. J is 0 for any such constant strategy and 1 for a perfect one.</p>
+<p>Every run carries a 95% Wilson interval. An interval that is tight and contains zero
+means the run is <em>measured</em> to have no discrimination; one that is wide and
+contains zero means the run establishes nothing. Those are marked differently because
+they mean opposite things.</p>
+<p>Before any model was run, the corpus was attacked with zero-cost heuristics, including
+one that pools novel-wide name statistics the way someone who downloaded the dataset
+would. The best reached J +0.066, so the benchmark is not simply leaking its own
+injection method.</p>
+</section>
+"""
+
+CAVEATS = """
+<section class="method">
+<h2>What this does not show</h2>
+<ul>
+<li><strong>Injected errors are not natural errors.</strong> This measures detection of
+programmatically injected contradictions.</li>
+<li><strong>The novels are famous</strong>, so they are in every frontier model's training
+data. Per-novel recall is published in each run's JSON so memorisation shows up as
+variance.</li>
+<li><strong>One error type dominates.</strong> Regex injection over real prose supports one
+high-volume type plus a small tail; balanced volume needs an LLM injector.</li>
+<li><strong>Local models report $0.00</strong> because they cost no API money. They cost
+wall clock and hardware instead, which is why median latency sits beside the cost.</li>
+</ul>
+</section>
+"""
+
+
+def render(rows, corpus_stats, public=False):
     if not rows:
         body = '<div class="empty">No results yet. Run <code>python3 evaluate.py attack</code>.</div>'
     elif has_paid_run(rows):
@@ -441,6 +544,8 @@ def render(rows, corpus_stats):
             "zero: that run establishes nothing either way, usually too few items.</p>"
         )
     status = headline(rows)
+    if public:
+        return render_public(rows, corpus_stats)
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -463,10 +568,153 @@ rate is measured on the same text distribution as the recall.</p>
 """
 
 
+CONTENDER_KINDS = ("model", "floor")
+INTEGRITY_KINDS = ("attack", "diagnostic")
+
+
+def integrity_section(rows):
+    """Attacks and diagnostics, kept out of the leaderboard proper.
+
+    These are not contenders: they are the checks that decide whether the leaderboard
+    is worth reading, and a diagnostic that exploits the release format would otherwise
+    sit at the top of it.
+    """
+    if not rows:
+        return ""
+    attacks = [r["youden_j"] for r in rows if r["kind"] == "attack"]
+    diagnostics = [r for r in rows if r["kind"] == "diagnostic"]
+    lead = []
+    if attacks:
+        lead.append(
+            f"The strongest zero-cost heuristic reaches J {max(attacks):+.3f}. A benchmark "
+            "whose errors could be found by a regex would not be measuring reasoning."
+        )
+    if diagnostics:
+        worst = max(diagnostics, key=lambda r: r["youden_j"])
+        lead.append(
+            f'The diagnostics exploit the release format rather than the text: '
+            f'{esc(worst["predictor"])} reaches J {worst["youden_j"]:+.3f} by diffing the two '
+            "halves of a matched pair. That is why the published test split ships one half "
+            "of each pair and holds its labels back."
+        )
+    return (
+        '<section class="method"><h2>Benchmark integrity</h2>'
+        + "".join(f"<p>{line}</p>" for line in lead)
+        + table(rows)
+        + "</section>"
+    )
+
+
+def render_public(rows, corpus_stats):
+    """The shareable leaderboard: hero claim, chart, table, method, caveats.
+
+    Contenders and integrity checks are shown separately. Sorted by J alone, the
+    pair-diff integrity check tops the board at +0.699 and reads as the winning model,
+    when what it actually does is exploit the release format. Trivial floors stay in
+    the main table because a reader needs them to judge whether a model beat guessing.
+    """
+    contenders = [r for r in rows if r["kind"] in CONTENDER_KINDS]
+    integrity = [r for r in rows if r["kind"] in INTEGRITY_KINDS]
+    charts = (
+        '<div class="panels">'
+        '<div class="panel"><h3>Cost vs discrimination</h3>'
+        '<p class="note">J = recall &minus; false-positive rate. Zero means the run '
+        "separates nothing.</p>"
+        + scatter(contenders, "youden_j", "J = recall - FPR", 0.0, "no discrimination")
+        + "</div>"
+        '<div class="panel"><h3>Cost vs F1</h3>'
+        '<p class="note">Dashed line: flagging every passage. Points on or below it '
+        "discriminate nothing, whatever their F1.</p>"
+        + scatter(contenders, "f1", "F1", FLOOR_F1, "flag-everything F1 = 0.667")
+        + "</div></div>"
+        if has_paid_run(contenders)
+        else '<div class="panels">'
+        '<div class="panel"><h3>Discrimination</h3>'
+        '<p class="note">J = recall &minus; false-positive rate.</p>'
+        + bars(contenders, "youden_j", "J = recall - FPR")
+        + "</div>"
+        '<div class="panel"><h3>F1, for comparison</h3>'
+        '<p class="note">Dashed line: flagging every passage scores 0.667 while '
+        "discriminating nothing. This is why F1 is not the headline.</p>"
+        + bars(contenders, "f1", "F1", FLOOR_F1)
+        + "</div></div>"
+        '<p class="sub">No run has cost API money yet, so there is no cost axis to draw. '
+        "The cost-vs-quality view appears once a paid or hosted run lands.</p>"
+    )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Continuity Bench</title>
+<meta name="description" content="How well do models detect continuity errors in novel-length fiction?">
+<style>{STYLE}{PUBLIC_STYLE}</style>
+</head>
+<body>
+<main>
+<header class="masthead">
+<h1>Continuity Bench</h1>
+<p class="tagline">How well do models detect continuity errors in novel-length fiction,
+and what does each detection cost?</p>
+</header>
+{hero(rows)}
+<h2>Leaderboard</h2>
+<p class="sub">{esc(corpus_stats)}</p>
+{charts}
+{legend(contenders)}
+{table(contenders)}
+<p class="sub">&#8226; the interval is tight and contains zero: that run is measured to
+have no discrimination. &#8225; the interval is wide and contains zero: that run
+establishes nothing either way, usually too few items.</p>
+{METHOD}
+{integrity_section(integrity)}
+{CAVEATS}
+<footer class="foot">
+<p>Benchmark code, corpus builder and evaluation harness:
+<a href="https://github.com/kunal-katiyar/continuity-bench">continuity-bench</a>.
+Every number here is reproducible with <code>run_all_checks.sh</code> plus the run
+command recorded in each result file.</p>
+</footer>
+</main>
+</body>
+</html>
+"""
+
+
+PUBLIC_STYLE = """
+.masthead { margin-bottom: 28px; }
+.tagline { font-size: 1.05rem; color: var(--ink-2); max-width: 60ch; }
+.hero {
+  background: var(--surface); border: 1px solid var(--grid); border-left: 3px solid #2a78d6;
+  border-radius: 10px; padding: 20px 22px; margin: 28px 0 36px;
+}
+.hero h2 { margin: 0 0 10px; font-size: 0.82rem; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--muted); }
+.hero.pending { border-left-color: var(--axis); }
+.hero-number { font-size: 2rem; font-weight: 650; letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums; }
+.hero-ci { font-size: 0.85rem; font-weight: 400; color: var(--muted); margin-left: 12px;
+  letter-spacing: 0; }
+.hero-claim { font-size: 1rem; color: var(--ink); margin: 6px 0 0; }
+.hero-status { color: var(--ink-2); margin: 8px 0 0; }
+.method { margin-top: 40px; }
+.method h2 { font-size: 1.05rem; }
+.method p, .method li { color: var(--ink-2); max-width: 74ch; }
+.method ul { padding-left: 20px; }
+.method li { margin-bottom: 7px; }
+.foot { margin-top: 48px; padding-top: 18px; border-top: 1px solid var(--grid); }
+.foot p { color: var(--muted); font-size: 0.85rem; }
+a { color: #2a78d6; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) a { color: #3987e5; } }
+:root[data-theme="dark"] a { color: #3987e5; }
+"""
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", default=str(RESULTS_DIR))
     parser.add_argument("--out", default=str(SITE_DIR / "index.html"))
+    parser.add_argument("--public", action="store_true", help="render the shareable leaderboard")
     args = parser.parse_args(argv)
     rows = load_results(args.results)
     stats = ""
@@ -477,7 +725,7 @@ def main(argv=None):
         )
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render(rows, stats), encoding="utf-8")
+    out.write_text(render(rows, stats, public=args.public), encoding="utf-8")
     print(f"wrote {out} ({len(rows)} run(s), {out.stat().st_size} bytes)")
     return 0
 

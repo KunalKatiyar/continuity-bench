@@ -42,6 +42,7 @@ class Prediction:
     has_error: bool
     paragraph_index: int | None = None
     cost_usd: float = 0.0
+    confidence: float | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     note: str = ""
@@ -88,6 +89,7 @@ class Scores:
     false_negative: int = 0
     localized: int = 0
     cost_usd: float = 0.0
+    confidence: float | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     latencies: list = field(default_factory=list)
@@ -505,6 +507,8 @@ MODEL_PRICING_USD_PER_MTOK = {
     "gpt-4.1": (2.00, 8.00),
     "gpt-4o": (2.50, 10.00),
     "gpt-4o-mini": (0.15, 0.60),
+    # Jev bills input only; output is free because it generates none.
+    "typesafe:jev-latest": (0.042, 0.0),
 }
 
 VERDICT_SCHEMA_NAME = "continuity_verdict"
@@ -788,12 +792,182 @@ class LocalPredictor(OpenAIPredictor):
         return OpenAI(base_url=self.base_url, api_key="ollama")
 
 
-PROVIDERS = {"llm": AnthropicPredictor, "openai": OpenAIPredictor, "local": LocalPredictor}
-DEFAULT_MODELS = {"llm": "claude-opus-5", "openai": "gpt-4.1", "local": "llama3.1:8b"}
 
 predictor("llm", kind="model", needs_key=True)(AnthropicPredictor("claude-opus-5"))
 predictor("openai", kind="model", needs_key=True)(OpenAIPredictor("gpt-4.1"))
 predictor("local", kind="model", needs_key=False)(LocalPredictor("llama3.1:8b"))
+
+class JevPredictor(VerdictPredictor):
+    """The naive Jev-only pass: one typed question per passage, no LLM anywhere.
+
+    The brief asks for this baseline explicitly and asks for it reported honestly -
+    it is where Jev alone is expected to fall short, because a bare passage is not the
+    story state that a System One model is meant to be checking against. JevHybrid is
+    the configuration the project is actually proposing.
+
+    Jev returns a calibrated probability rather than sampled text, so the confidence
+    is recorded on every prediction and is what the hybrid thresholds on.
+    """
+
+    provider = "jev"
+    needs_key = True
+
+    def __init__(self, model="typesafe:jev-latest", **kw):
+        kw.setdefault("rates", MODEL_PRICING_USD_PER_MTOK.get(model))
+        super().__init__(model=model, **kw)
+        self._verifier = None
+
+    def verifier(self):
+        if self._verifier is None:
+            import pipeline
+
+            self._verifier = pipeline.JevVerifier(self.model)
+        return self._verifier
+
+    def __call__(self, item):
+        import pipeline
+
+        verifier = self.verifier()
+        before = verifier.input_tokens
+        state = pipeline.StoryState(
+            established_facts=["(no separate state: the passage is checked against itself)"]
+        )
+        try:
+            contradicts, confidence = verifier.check(state, item["text"])
+        except Exception as exc:
+            fatal = classify_api_error(exc)
+            if fatal:
+                raise RunAborted(fatal) from exc
+            self.api_failures += 1
+            self.api_failure_notes.append(f"{type(exc).__name__}: {str(exc)[:160]}")
+            return Prediction(has_error=False, note=f"API FAILURE: {type(exc).__name__}")
+        used = verifier.input_tokens - before
+        return Prediction(
+            has_error=contradicts,
+            cost_usd=self.price(used, 0),
+            confidence=confidence,
+            input_tokens=used,
+            note=f"jev confidence {confidence:.3f}",
+        )
+
+
+class JevHybridPredictor(VerdictPredictor):
+    """The proposal itself: LLM extracts state, Jev checks every paragraph, LLM confirms.
+
+    This is the run the leaderboard leads with, because it is the claim - match
+    full-context LLM accuracy at a fraction of the cost. Cost here is honest about the
+    extraction call, which on a real manuscript amortises across a whole chapter but on
+    a single benchmark passage does not, so this number is an upper bound on what the
+    pipeline costs in production.
+    """
+
+    provider = "jev_hybrid"
+    needs_key = True
+
+    def __init__(self, model="typesafe:jev-latest", helper_model="claude-opus-5", **kw):
+        kw.setdefault("rates", MODEL_PRICING_USD_PER_MTOK.get(model))
+        super().__init__(model=model, **kw)
+        self.helper_model = helper_model
+        self.predictor_name = f"jev_hybrid_{helper_model}"
+        self._verifier = None
+        self._helper = None
+        self.escalations = 0
+        self.paragraphs_checked = 0
+
+    def verifier(self):
+        if self._verifier is None:
+            import pipeline
+
+            self._verifier = pipeline.JevVerifier(self.model)
+        return self._verifier
+
+    def helper(self):
+        if self._helper is None:
+            self._helper = AnthropicPredictor(self.helper_model)
+        return self._helper
+
+    def extract(self, text):
+        import pipeline
+
+        helper = self.helper()
+        raw, tokens_in, tokens_out = helper.complete(
+            pipeline.EXTRACTION_PROMPT.format(text=text)
+        )
+        self.helper_cost = getattr(self, "helper_cost", 0.0) + helper.price(tokens_in, tokens_out)
+        return pipeline.parse_state(raw)
+
+    def escalate(self, state, index, paragraph, text):
+        import pipeline
+
+        helper = self.helper()
+        raw, tokens_in, tokens_out = helper.complete(
+            pipeline.ESCALATION_PROMPT.format(
+                state=state.as_prompt(), index=index, paragraph=paragraph, text=text
+            )
+        )
+        self.helper_cost = getattr(self, "helper_cost", 0.0) + helper.price(tokens_in, tokens_out)
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            self.parse_failures += 1
+            return None
+        return pipeline.EscalationVerdict(
+            is_real_contradiction=bool(payload.get("is_real_contradiction")),
+            paragraph_index=int(payload.get("paragraph_index", index)),
+            explanation=str(payload.get("explanation", "")),
+        )
+
+    def __call__(self, item):
+        import pipeline
+
+        self.helper_cost = getattr(self, "helper_cost", 0.0)
+        before_cost = self.helper_cost
+        verifier = self.verifier()
+        before_tokens = verifier.input_tokens
+        try:
+            result = pipeline.run_pipeline(
+                item["text"], verifier, self.extract, self.escalate
+            )
+        except Exception as exc:
+            fatal = classify_api_error(exc)
+            if fatal:
+                raise RunAborted(fatal) from exc
+            self.api_failures += 1
+            self.api_failure_notes.append(f"{type(exc).__name__}: {str(exc)[:160]}")
+            return Prediction(has_error=False, note=f"API FAILURE: {type(exc).__name__}")
+        self.escalations += result.escalations
+        self.paragraphs_checked += result.paragraphs_checked
+        confirmed = result.confirmed
+        jev_tokens = verifier.input_tokens - before_tokens
+        return Prediction(
+            has_error=bool(confirmed),
+            paragraph_index=confirmed[0].paragraph_index if confirmed else None,
+            cost_usd=self.price(jev_tokens, 0) + (self.helper_cost - before_cost),
+            confidence=confirmed[0].jev_confidence if confirmed else None,
+            input_tokens=jev_tokens,
+            note=confirmed[0].explanation[:300] if confirmed else "no confirmed contradiction",
+        )
+
+
+predictor("jev", kind="model", needs_key=True)(JevPredictor())
+predictor("jev_hybrid", kind="model", needs_key=True)(JevHybridPredictor())
+
+
+PROVIDERS = {
+    "llm": AnthropicPredictor,
+    "openai": OpenAIPredictor,
+    "local": LocalPredictor,
+    "jev": JevPredictor,
+    "jev_hybrid": JevHybridPredictor,
+}
+DEFAULT_MODELS = {
+    "llm": "claude-opus-5",
+    "openai": "gpt-4.1",
+    "local": "llama3.1:8b",
+    "jev": "typesafe:jev-latest",
+    "jev_hybrid": "typesafe:jev-latest",
+}
+
 
 
 def load_items(corpus, split=None, rule=None, limit=None):

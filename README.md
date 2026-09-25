@@ -237,6 +237,44 @@ true of this corpus and stops a model's prior from dominating the result, but it
 prompt choice worth recording — a deployment on a real manuscript has a far lower base
 rate.
 
+## The Jev editing harness
+
+Phase 2, implemented in `pipeline.py`:
+
+```
+chapter text  --[LLM, once per chapter]-->  story state (facts, traits, timeline)
+paragraph     --[Jev, once per paragraph]-> contradicts state? yes/no + confidence
+flagged only  --[LLM, once per flag]------> confirm, and write the author's note
+```
+
+The bet is that verification is a *closed* question — "does this paragraph contradict a
+fact already in state?" — which is what a System One model answers in one parallel pass
+for input-token cost alone. Generation is needed only at the two ends: building the
+state, and explaining a real hit. So the expensive model touches a small fraction of the
+text.
+
+Escalation keys on Jev's **calibrated confidence**, not just its answer. A confident
+"no" is dropped; an unsure "no" is escalated, because an unsure answer is exactly where
+a cheap gate is worst. `escalation_rate` is recorded per run, and it is the number that
+decides whether the cost story holds.
+
+Two predictors reach the leaderboard:
+
+- **`jev`** — the naive Jev-only pass the brief asks for explicitly, and asks to be
+  reported honestly. A bare passage is not the story state Jev is meant to check
+  against, so this is expected to underperform; it is the control for the hybrid.
+- **`jev_hybrid`** — the proposal itself, and the run the public leaderboard leads with.
+  Its cost includes the extraction call, which on a real manuscript amortises across a
+  whole chapter but on a single benchmark passage does not — so the figure is an upper
+  bound on production cost.
+
+```bash
+.venv/bin/python evaluate.py run jev        --split dev --yes   # ~$0.03
+.venv/bin/python evaluate.py run jev_hybrid --split dev --yes
+```
+
+Credentials: `TYPESAFE_API_KEY`, or `~/.typesafe-key`.
+
 ## The local open-LLM baseline
 
 `run local` talks to [Ollama](https://ollama.com)'s OpenAI-compatible endpoint, so it
@@ -346,6 +384,8 @@ so `cost_usd` is a true 0.0 and `median_latency_s` is the number to read beside 
   or the weekday alternation) and running the expensive patterns only near hits would
   bring it into single digits. Not done: the build is run rarely and correctness of the
   labels mattered more than its wall clock.
-- Jev is a proprietary hosted API. The pipeline code here is open source; the model is
-  not. Nothing in this repo has called it yet, and the pricing and latency in the project
-  brief are unverified — worth confirming before Phase 2 design depends on them.
+- Jev is a proprietary hosted API (TypeSafe AI, released 2026-09-15). The pipeline code
+  here is open source; the model is not. Its pricing is the reason the architecture is
+  worth trying: **$0.042 per million input tokens with no output cost**, because it
+  generates no tokens. A full 410-item dev pass through the Jev-only baseline costs
+  **$0.026**.
