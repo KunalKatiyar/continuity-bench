@@ -249,6 +249,95 @@ def run_pipeline(
     return result
 
 
+class LocalVerifier:
+    """A stand-in for Jev, so the harness can be run and measured without Jev access.
+
+    Same interface as JevVerifier, backed by a small local model asked for a boolean
+    plus a self-reported confidence. Swapping one for the other is a single line.
+
+    The confidences are NOT equivalent and must not be read as such. Jev returns a
+    calibrated probability from a single parallel pass over a closed answer set; a
+    generative model asked "how sure are you" returns a sampled number that is only
+    loosely related to its own error rate. This stand-in therefore validates the
+    architecture - that a per-paragraph gate plus selective escalation runs, and at
+    what escalation rate - and not Jev's accuracy or its calibration.
+
+    It is also not cheap: it costs a model call per paragraph, which is the very thing
+    Jev exists to avoid. Cost figures from a run using this verifier are meaningless as
+    a cost claim; see project_jev_cost in evaluate.py for what can honestly be said.
+    """
+
+    SCHEMA = {
+        "type": "object",
+        "properties": {
+            "contradicts_state": {"type": "boolean"},
+            "confidence": {"type": "number"},
+        },
+        "required": ["contradicts_state", "confidence"],
+        "additionalProperties": False,
+    }
+
+    def __init__(self, model="llama3.1:8b", base_url="http://localhost:11434/v1"):
+        self.model = model
+        self.base_url = base_url
+        self._client = None
+        self.input_tokens = 0
+        self.calls = 0
+
+    def client(self):
+        if self._client is None:
+            from openai import OpenAI
+
+            self._client = OpenAI(base_url=self.base_url, api_key="ollama")
+        return self._client
+
+    def check(self, state, paragraph):
+        prompt = (
+            "Established facts about this story:\n"
+            f"{state.as_prompt()}\n\n"
+            "Paragraph to check:\n"
+            f"{paragraph}\n\n"
+            "Does this paragraph contradict an established fact? Give your confidence "
+            "in that answer from 0 to 1."
+        )
+        response = self.client().chat.completions.create(
+            model=self.model,
+            max_completion_tokens=200,
+            temperature=0.0,
+            seed=20260922,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": "gate", "strict": True, "schema": self.SCHEMA},
+            },
+        )
+        self.calls += 1
+        self.input_tokens += response.usage.prompt_tokens
+        try:
+            payload = json.loads(response.choices[0].message.content or "")
+        except json.JSONDecodeError:
+            return False, 0.0
+        confidence = payload.get("confidence", 0.0)
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        return bool(payload.get("contradicts_state")), max(0.0, min(1.0, confidence))
+
+
+JEV_INPUT_USD_PER_MTOK = 0.042
+
+
+def project_jev_cost(gate_input_tokens, escalation_cost_usd=0.0):
+    """What the gate would have cost at Jev's published rate.
+
+    A projection, not a measurement: it applies TypeSafe's published input price to
+    token counts measured from a real run. It is honest about the gate only - the
+    escalation cost passed in is whatever the real escalator actually charged.
+    """
+    return gate_input_tokens / 1e6 * JEV_INPUT_USD_PER_MTOK + escalation_cost_usd
+
+
 def parse_state(raw):
     """Parse an extraction response into StoryState, tolerating fenced JSON."""
     text = raw.strip()

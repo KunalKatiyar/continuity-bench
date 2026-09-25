@@ -151,6 +151,45 @@ def test_jev_token_use_is_recorded_for_costing():
     assert result.jev_input_tokens == 400
 
 
+def test_the_stand_in_verifier_matches_the_jev_interface():
+    """Swapping the gate back to Jev must be one line, so the interfaces must match."""
+    jev, local = pipeline.JevVerifier, pipeline.LocalVerifier
+    for attribute in ("check", "input_tokens", "model"):
+        assert hasattr(local("llama3.1:8b"), attribute), attribute
+        assert hasattr(jev(), attribute), attribute
+    import inspect
+
+    assert inspect.signature(local.check).parameters.keys() == inspect.signature(jev.check).parameters.keys()
+
+
+def test_the_harness_runs_with_either_verifier_swapped_in():
+    """run_pipeline must not know or care which gate it was handed."""
+    for verifier in (_FakeVerifier([(True, 0.9)] + [(False, 0.99)] * 3),):
+        result = pipeline.run_pipeline(_passage(), verifier, _extract, _escalate_confirming)
+        assert result.paragraphs_checked == 4
+        assert len(result.confirmed) == 1
+
+
+def test_jev_cost_projection_uses_the_published_input_rate():
+    assert pipeline.JEV_INPUT_USD_PER_MTOK == 0.042
+    assert round(pipeline.project_jev_cost(1_000_000), 6) == 0.042
+    assert round(pipeline.project_jev_cost(500_000, 0.25), 6) == 0.271
+    assert pipeline.project_jev_cost(0) == 0.0
+
+
+def test_a_malformed_gate_reply_is_a_confident_no_not_a_crash():
+    class _Broken:
+        def __init__(self):
+            self.input_tokens = 0
+
+        def check(self, state, paragraph):
+            return False, 0.0
+
+    result = pipeline.run_pipeline(_passage(2), _Broken(), _extract, _escalate_rejecting)
+    assert result.paragraphs_checked == 2
+    assert result.escalations == 2
+
+
 if __name__ == "__main__":
     import _selftest
 

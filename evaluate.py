@@ -952,6 +952,104 @@ class JevHybridPredictor(VerdictPredictor):
 predictor("jev", kind="model", needs_key=True)(JevPredictor())
 predictor("jev_hybrid", kind="model", needs_key=True)(JevHybridPredictor())
 
+class HybridLocalPredictor(VerdictPredictor):
+    """The Jev architecture with a local stand-in in Jev's slot, runnable today.
+
+    Same three stages as JevHybridPredictor - extract state, gate every paragraph,
+    escalate only what the gate flags - but the gate and the escalator are both local
+    models, so it needs no keys and no credits. Swapping the gate back to JevVerifier
+    is one line.
+
+    What this run can establish: that the harness works on real corpus items, what the
+    escalation rate is, and whether gate-plus-escalation beats a single whole-passage
+    pass by the same model. What it cannot establish: anything about Jev's accuracy,
+    its calibration, or the cost claim - a local gate costs a model call per paragraph,
+    which is the cost Jev exists to remove. `projected_jev_gate_usd` in the results
+    applies TypeSafe's published rate to the measured gate tokens and is labelled a
+    projection for that reason.
+    """
+
+    provider = "hybrid_local"
+    needs_key = False
+
+    def __init__(self, model="llama3.1:8b", gate_model=None, **kw):
+        kw.setdefault("rates", (0.0, 0.0))
+        super().__init__(model=model, **kw)
+        self.gate_model = gate_model or model
+        self.predictor_name = f"hybrid_local_{self.gate_model}"
+        self._verifier = None
+        self._helper = None
+        self.escalations = 0
+        self.paragraphs_checked = 0
+        self.gate_input_tokens = 0
+
+    def verifier(self):
+        if self._verifier is None:
+            import pipeline
+
+            self._verifier = pipeline.LocalVerifier(self.gate_model)
+        return self._verifier
+
+    def helper(self):
+        if self._helper is None:
+            self._helper = LocalPredictor(self.model)
+        return self._helper
+
+    def extract(self, text):
+        import pipeline
+
+        raw, _, _ = self.helper().complete(pipeline.EXTRACTION_PROMPT.format(text=text))
+        return pipeline.parse_state(raw)
+
+    def escalate(self, state, index, paragraph, text):
+        import pipeline
+
+        raw, _, _ = self.helper().complete(
+            pipeline.ESCALATION_PROMPT.format(
+                state=state.as_prompt(), index=index, paragraph=paragraph, text=text
+            )
+        )
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            self.parse_failures += 1
+            return None
+        return pipeline.EscalationVerdict(
+            is_real_contradiction=bool(payload.get("is_real_contradiction")),
+            paragraph_index=int(payload.get("paragraph_index", index)),
+            explanation=str(payload.get("explanation", "")),
+        )
+
+    def __call__(self, item):
+        import pipeline
+
+        verifier = self.verifier()
+        before = verifier.input_tokens
+        try:
+            result = pipeline.run_pipeline(item["text"], verifier, self.extract, self.escalate)
+        except Exception as exc:
+            if classify_api_error(exc):
+                raise RunAborted(classify_api_error(exc)) from exc
+            self.api_failures += 1
+            self.api_failure_notes.append(f"{type(exc).__name__}: {str(exc)[:160]}")
+            return Prediction(has_error=False, note=f"API FAILURE: {type(exc).__name__}")
+        self.escalations += result.escalations
+        self.paragraphs_checked += result.paragraphs_checked
+        self.gate_input_tokens += verifier.input_tokens - before
+        confirmed = result.confirmed
+        return Prediction(
+            has_error=bool(confirmed),
+            paragraph_index=confirmed[0].paragraph_index if confirmed else None,
+            cost_usd=0.0,
+            confidence=confirmed[0].jev_confidence if confirmed else None,
+            input_tokens=verifier.input_tokens - before,
+            note=confirmed[0].explanation[:300] if confirmed else "no confirmed contradiction",
+        )
+
+
+predictor("hybrid_local", kind="model", needs_key=False)(HybridLocalPredictor())
+
+
 
 PROVIDERS = {
     "llm": AnthropicPredictor,
@@ -959,6 +1057,7 @@ PROVIDERS = {
     "local": LocalPredictor,
     "jev": JevPredictor,
     "jev_hybrid": JevHybridPredictor,
+    "hybrid_local": HybridLocalPredictor,
 }
 DEFAULT_MODELS = {
     "llm": "claude-opus-5",
@@ -966,6 +1065,7 @@ DEFAULT_MODELS = {
     "local": "llama3.1:8b",
     "jev": "typesafe:jev-latest",
     "jev_hybrid": "typesafe:jev-latest",
+    "hybrid_local": "llama3.1:8b",
 }
 
 
@@ -1072,6 +1172,19 @@ def cmd_run(args):
         for key in ("model", "effort")
         if (value := getattr(predict, key, None)) is not None
     }
+    import pipeline as _pipeline
+
+    if getattr(predict, "paragraphs_checked", 0):
+        extra["paragraphs_checked"] = predict.paragraphs_checked
+        extra["escalations"] = predict.escalations
+        extra["escalation_rate"] = round(
+            predict.escalations / predict.paragraphs_checked, 4
+        )
+    if getattr(predict, "gate_input_tokens", 0):
+        extra["gate_input_tokens"] = predict.gate_input_tokens
+        extra["projected_jev_gate_usd"] = round(
+            _pipeline.project_jev_cost(predict.gate_input_tokens), 6
+        )
     failures = getattr(predict, "parse_failures", 0)
     api_failures = getattr(predict, "api_failures", 0)
     if failures:

@@ -275,6 +275,27 @@ Two predictors reach the leaderboard:
 
 Credentials: `TYPESAFE_API_KEY`, or `~/.typesafe-key`.
 
+### Running the architecture without Jev
+
+TypeSafe closed new Jev signups, so the two predictors above cannot be run here yet.
+`pipeline.LocalVerifier` is a drop-in stand-in with the same interface, and
+`hybrid_local` runs the whole three-stage harness on local models with no keys at all:
+
+```bash
+.venv/bin/python evaluate.py run hybrid_local --model llama3.1:8b --split dev --limit 10
+```
+
+**What that establishes:** the harness runs on real corpus items, at a measured
+escalation rate, and whether gate-plus-escalation beats a single whole-passage pass by
+the same model. Every interface Jev touches is exercised, so restoring Jev is one line.
+
+**What it cannot establish:** anything about Jev's accuracy or calibration, and nothing
+about cost. A local gate costs a model call per paragraph, which is precisely the cost
+Jev exists to remove, and a generative model's self-reported confidence is not a
+calibrated probability. Runs record `projected_jev_gate_usd`, which applies TypeSafe's
+published $0.042/MTok to the *measured* gate tokens — a projection, labelled as one,
+not a measurement.
+
 ## The local open-LLM baseline
 
 `run local` talks to [Ollama](https://ollama.com)'s OpenAI-compatible endpoint, so it
