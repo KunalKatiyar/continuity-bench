@@ -33,7 +33,7 @@
   "cost_usd": 0.0,
   "input_tokens": 0,
   "output_tokens": 0,
-  "median_latency_s": 0.0002,
+  "median_latency_s": 0.0003,
   "recall_by_rule": {
     "character_swap": 0.5113,
     "timeline_weekday": 0.0,

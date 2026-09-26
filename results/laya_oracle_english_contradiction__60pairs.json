@@ -1,0 +1,56 @@
+{
+  "predictor": "laya_oracle_english_contradiction (60 pairs)",
+  "kind": "model",
+  "corpus": "continuity_v0.jsonl",
+  "items": 120,
+  "pairs": 60,
+  "novels": 6,
+  "model": "convaiinnovations/laya",
+  "effort": "high",
+  "question": "contradiction",
+  "precision": 0.5238,
+  "recall": 0.55,
+  "f1": 0.5366,
+  "youden_j": 0.05,
+  "youden_j_ci95": [
+    -0.1977,
+    0.2917
+  ],
+  "youden_j_significant": false,
+  "youden_j_verdict": "inconclusive",
+  "roc_auc": 0.5181,
+  "paragraph_youden_j": 0.0145,
+  "paragraph_recall": 0.0833,
+  "paragraph_fpr": 0.0688,
+  "paragraphs_judged": 1440,
+  "recall_ci95": [
+    0.4249,
+    0.6691
+  ],
+  "fpr_ci95": [
+    0.3773,
+    0.6227
+  ],
+  "false_positive_rate": 0.5,
+  "localization": 0.0909,
+  "true_positive": 33,
+  "false_positive": 30,
+  "true_negative": 30,
+  "false_negative": 27,
+  "cost_usd": 0.0,
+  "input_tokens": 276129,
+  "output_tokens": 0,
+  "median_latency_s": 0.6826,
+  "recall_by_rule": {
+    "character_swap": 0.5345,
+    "trait_flip": 1.0
+  },
+  "recall_by_novel": {
+    "pg1023": 0.5385,
+    "pg120": 0.5833,
+    "pg121": 0.5,
+    "pg1260": 0.6667,
+    "pg1342": 0.4444,
+    "pg1400": 0.5
+  }
+}

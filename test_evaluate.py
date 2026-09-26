@@ -471,6 +471,52 @@ def test_the_verdict_travels_into_the_results_record():
     assert summary["youden_j_significant"] is False
 
 
+def test_oracle_state_excludes_the_injected_intruder():
+    """The property the oracle depends on: the intruder is absent from the clean half."""
+    clean = ("Margaret crossed the yard. Margaret shouldered the gate open again. "
+             "Whatever Margaret expected of the morning, it was not this rain.")
+    state = evaluate.oracle_state(clean).as_prompt()
+    assert "Margaret" in state
+    assert "Hollis" not in state
+
+
+def test_oracle_state_claim_is_true_for_names_mentioned_once():
+    """Listing only frequent names made the 'only characters present' claim false.
+
+    That was a real bug: it was false in 266 of 272 clean passages, and the gate
+    flagging those paragraphs was correct behaviour being scored as a false positive.
+    """
+    clean = ("Margaret crossed the yard and Margaret waited there a while longer. "
+             "Only Hollis came late to the gate that morning, and said nothing.")
+    state = evaluate.oracle_state(clean).as_prompt()
+    assert "Margaret" in state
+    assert "Hollis" in state, "a character mentioned once must still be listed"
+
+
+def test_every_provider_accepts_a_declared_question():
+    """--question is a global flag; a predictor that rejects it crashes the run."""
+    import pipeline
+
+    for name, cls in evaluate.PROVIDERS.items():
+        predictor = cls(model="x", question="presupposition")
+        assert predictor.question == "presupposition", name
+    assert set(pipeline.GATE_QUESTIONS) == {"contradiction", "presupposition"}
+
+
+def test_a_predictor_defaults_to_the_declared_default_question():
+    import pipeline
+
+    assert evaluate.PROVIDERS["laya"](model="x").question == pipeline.DEFAULT_QUESTION
+
+
+def test_oracle_gate_predictors_are_siblings_not_a_laya_chain():
+    """A local gate must not inherit Laya-only params or Jev-only cost projection."""
+    assert issubclass(evaluate.LocalOraclePredictor, evaluate.OracleGatePredictor)
+    assert not issubclass(evaluate.LocalOraclePredictor, evaluate.LayaPredictor)
+    assert not issubclass(evaluate.LocalOraclePredictor, evaluate.JevPredictor)
+    assert not hasattr(evaluate.LocalOraclePredictor(model="x"), "subfolder")
+
+
 if __name__ == "__main__":
     import _selftest
 

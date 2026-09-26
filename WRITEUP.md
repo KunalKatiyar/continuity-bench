@@ -102,6 +102,65 @@ warns that it carries an invalid temperature for 11-option questions (the yes/no
 use is clean), and their *fine-tuned* checkpoint — the one carrying the headline
 accuracy number — does worse on this task than the base model.
 
+## State is the whole ballgame, and I broke my own experiment proving it
+
+Laya checks a paragraph against a *state* — the facts established so far. So the
+pipeline has two failure modes that look identical from the outside: a bad gate, or a
+gate handed a bad state. I ran the same gate three times with the state varied.
+
+| state | J | recall | FPR |
+|---|---|---|---|
+| none (raw passage) | +0.010 | 0.117 | 0.107 |
+| extracted by llama3.1:8b | +0.000 | **0.000** | 0.000 |
+| oracle | +0.044 | 0.595 | 0.551 |
+
+The middle row is the finding. With an llama-extracted state the gate fires on
+*nothing* — the pipeline's zero was an extraction failure, not a gate failure. That is
+a different bug with a different fix, and I had been reporting it as "the pipeline
+finds nothing".
+
+Then I nearly published a much worse claim. My first oracle listed only characters
+mentioned twice or more, while asserting "the **only** characters present are…". That
+claim was false in 266 of 272 clean passages — someone mentioned once was silently
+omitted. Laya flagged 63% of clean paragraphs, and I was one step from writing "the
+gate can't discriminate even with perfect state". It was discriminating fine. It was
+correctly detecting that my state was wrong.
+
+What made me look was the state listing "Baronet, French, Mademoiselle" as characters.
+My first check said 64% of the listed names weren't people — that was *also* wrong, because
+the list was Henry, Watson, Copperfield, and my name filter rejects surnames that
+usually appear as "Dr. Watson". I was comparing two of my own heuristics to each other.
+The test that settled it was asking whether the state's own claim was true.
+
+Fixed, false claims went from 266/272 to 9/272, and the conclusion survived anyway at
+J +0.044. But the number I would have published was produced by my bug, not by the model.
+
+## The signal is real and the corpus buries it
+
+With a state that actually holds, the per-rule split is sharp:
+
+| error type | Laya recall | NLI encoder AUC |
+|---|---|---|
+| `trait_flip` (stated fact contradicted) | **1.000** (n=6) | 0.556 |
+| `timeline_weekday` (stated sequence broken) | **1.000** (n=2) | 1.000 |
+| `character_swap` (character not in scene) | 0.587 | **0.502** (n=402) |
+
+Overall FPR is 0.551, so that 0.587 is chance wearing a recall costume.
+
+When the state explicitly contains the fact being contradicted, the gate catches it.
+When the error is someone being somewhere they shouldn't, it's at chance — with a
+perfect state. A 421M classifier and a zero-shot NLI encoder arrive at the same
+boundary independently, and the NLI side has n=402 behind it.
+
+So: **contradiction-shaped errors look tractable for cheap gates. Presupposition-shaped
+errors don't.** And 98% of this corpus is the second kind, which is why everything has
+read as zero. The signal exists; the corpus buries it 66 to 1.
+
+The honest caveat is loud: the two rules showing 1.000 have n=6 and n=2. That is a
+hypothesis with a mechanism and two converging methods, not a result. Making those
+rules 40% of the corpus instead of 2% is the experiment that would settle it, and it is
+what the injector work is for.
+
 ## What I don't know yet
 
 Whether a careful human can solve these items at all.

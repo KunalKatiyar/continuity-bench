@@ -1,0 +1,71 @@
+{
+  "predictor": "laya_oracle_english_contradiction",
+  "kind": "model",
+  "corpus": "continuity_v0.jsonl",
+  "items": 410,
+  "pairs": 205,
+  "novels": 20,
+  "model": "convaiinnovations/laya",
+  "effort": "high",
+  "question": "contradiction",
+  "precision": 0.5191,
+  "recall": 0.5951,
+  "f1": 0.5545,
+  "youden_j": 0.0439,
+  "youden_j_ci95": [
+    -0.091,
+    0.1772
+  ],
+  "youden_j_significant": false,
+  "youden_j_verdict": "inconclusive",
+  "roc_auc": 0.5206,
+  "paragraph_youden_j": 0.0301,
+  "paragraph_recall": 0.1073,
+  "paragraph_fpr": 0.0773,
+  "paragraphs_judged": 4916,
+  "recall_ci95": [
+    0.5268,
+    0.66
+  ],
+  "fpr_ci95": [
+    0.4828,
+    0.6177
+  ],
+  "false_positive_rate": 0.5512,
+  "localization": 0.123,
+  "true_positive": 122,
+  "false_positive": 113,
+  "true_negative": 92,
+  "false_negative": 83,
+  "cost_usd": 0.0,
+  "input_tokens": 935910,
+  "output_tokens": 0,
+  "median_latency_s": 0.5673,
+  "recall_by_rule": {
+    "character_swap": 0.5871,
+    "timeline_weekday": 1.0,
+    "trait_flip": 1.0
+  },
+  "recall_by_novel": {
+    "pg1023": 0.5385,
+    "pg120": 0.5833,
+    "pg121": 0.5,
+    "pg1260": 0.6667,
+    "pg1342": 0.4444,
+    "pg1400": 0.6154,
+    "pg155": 1.0,
+    "pg1661": 0.5833,
+    "pg174": 0.6667,
+    "pg2701": 0.5833,
+    "pg271": 0.5,
+    "pg2852": 0.75,
+    "pg43": 0.5,
+    "pg514": 0.4167,
+    "pg74": 0.75,
+    "pg76": 0.8333,
+    "pg766": 0.3846,
+    "pg768": 1.0,
+    "pg84": 0.5833,
+    "pg98": 0.6667
+  }
+}

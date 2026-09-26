@@ -33,6 +33,8 @@ import bench
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CORPUS = ROOT / "corpus" / "continuity_v0.jsonl"
 RESULTS_DIR = ROOT / "results"
+# a run covering fewer pairs than this is filed separately rather than overwriting
+PARTIAL_RUN_PAIRS = 200
 
 
 @dataclass
@@ -695,8 +697,12 @@ class VerdictPredictor:
 
     sampling = {}
 
-    def __init__(self, model, effort="high", max_tokens=2000, rates=None):
+    def __init__(self, model, effort="high", max_tokens=2000, rates=None, question=None):
+        import pipeline
+
         self.model = model
+        self.question = question or pipeline.DEFAULT_QUESTION
+        self._verifier = None
         self.effort = effort
         self.max_tokens = max_tokens
         self.rates = rates
@@ -706,6 +712,15 @@ class VerdictPredictor:
         self.parse_failure_notes = []
         self.api_failures = 0
         self.api_failure_notes = []
+
+    def verifier(self):
+        """The gate, constructed on first use. Subclasses implement make_verifier."""
+        if self._verifier is None:
+            self._verifier = self.make_verifier()
+        return self._verifier
+
+    def make_verifier(self):
+        raise NotImplementedError
 
     def client(self):
         """The provider SDK client, constructed on first use."""
@@ -900,14 +915,11 @@ class JevPredictor(VerdictPredictor):
     def __init__(self, model="typesafe:jev-latest", **kw):
         kw.setdefault("rates", MODEL_PRICING_USD_PER_MTOK.get(model))
         super().__init__(model=model, **kw)
-        self._verifier = None
 
-    def verifier(self):
-        if self._verifier is None:
-            import pipeline
+    def make_verifier(self):
+        import pipeline
 
-            self._verifier = pipeline.JevVerifier(self.model)
-        return self._verifier
+        return pipeline.JevVerifier(self.model, question=self.question)
 
     def __call__(self, item):
         import pipeline
@@ -959,12 +971,10 @@ class JevHybridPredictor(VerdictPredictor):
         self.escalations = 0
         self.paragraphs_checked = 0
 
-    def verifier(self):
-        if self._verifier is None:
-            import pipeline
+    def make_verifier(self):
+        import pipeline
 
-            self._verifier = pipeline.JevVerifier(self.model)
-        return self._verifier
+        return pipeline.JevVerifier(self.model, question=self.question)
 
     def helper(self):
         if self._helper is None:
@@ -1074,12 +1084,10 @@ class HybridLocalPredictor(VerdictPredictor):
         self.paragraphs_checked = 0
         self.gate_input_tokens = 0
 
-    def verifier(self):
-        if self._verifier is None:
-            import pipeline
+    def make_verifier(self):
+        import pipeline
 
-            self._verifier = pipeline.LocalVerifier(self.gate_model)
-        return self._verifier
+        return pipeline.LocalVerifier(self.gate_model, question=self.question)
 
     def helper(self):
         if self._helper is None:
@@ -1173,7 +1181,8 @@ class LayaHybridPredictor(HybridLocalPredictor):
     def make_verifier(self):
         import pipeline
 
-        return pipeline.LayaVerifier(self.gate_model, subfolder=self.subfolder)
+        return pipeline.LayaVerifier(self.gate_model, subfolder=self.subfolder,
+                                     question=self.question)
 
 
 class LayaPredictor(JevPredictor):
@@ -1203,11 +1212,154 @@ class LayaPredictor(JevPredictor):
     def make_verifier(self):
         import pipeline
 
-        return pipeline.LayaVerifier(self.model, subfolder=self.subfolder)
+        return pipeline.LayaVerifier(self.model, subfolder=self.subfolder,
+                                     question=self.question)
 
 
 predictor("laya", kind="model", needs_key=False)(LayaPredictor())
 predictor("laya_hybrid", kind="model", needs_key=False)(LayaHybridPredictor())
+
+def oracle_state(clean_text):
+    """The state a perfect extractor would produce, derived from the unedited twin.
+
+    This is deliberately not achievable in production - it reads the clean half of a
+    matched pair, which a real manuscript does not come with. It exists to decompose a
+    pipeline failure: if the gate scores nothing on an extracted state, that could be a
+    bad gate or a bad extractor, and those need opposite fixes. Running the same gate on
+    an oracle state separates them.
+
+    Derivation is deterministic, not another model: the characters actually present in
+    the scene, and any stated eye or hair colour. Those are exactly the facts the
+    injection rules contradict, so this is an upper bound on what extraction could
+    contribute rather than a general-purpose state.
+    """
+    # Every name, not just the frequent ones. Requiring two mentions made the state's
+    # own claim false in 97.8% of clean passages - a character mentioned once was
+    # omitted, so the gate was right to flag paragraphs naming them, and what looked
+    # like a gate that could not discriminate was a gate correctly detecting that the
+    # state it had been handed was wrong. The injected intruder appears zero times in
+    # the clean half in all 266 cases, so the full list still excludes it.
+    present = sorted(bench.name_counts(clean_text))
+    facts = []
+    if present:
+        facts.append(
+            "The only characters present in this scene are: " + ", ".join(present)
+        )
+    traits = {}
+    for noun, pattern in bench.TRAIT_PATTERNS:
+        for m in pattern.finditer(clean_text):
+            owner = m.group("owner").strip()
+            traits.setdefault((owner, noun), m.group("value").lower())
+    for (owner, noun), value in sorted(traits.items()):
+        facts.append(f"{owner} {noun} is {value}")
+    import pipeline
+
+    return pipeline.StoryState(established_facts=facts)
+
+
+class OracleGatePredictor(VerdictPredictor):
+    """Gates every paragraph against the state a perfect extractor would have produced.
+
+    The state comes from the clean half of the matched pair, so results here are an
+    upper bound rather than something achievable - the job is to answer a question the
+    leaderboard cannot otherwise settle: when a gate finds nothing against an extracted
+    state, is the gate bad or was it handed a bad state?
+
+    Neutral base with the gate as the only difference, so a Laya run and an open-model
+    run differ in exactly one thing. A local gate inheriting from a Laya class would
+    carry Laya-only parameters and Jev-only cost projection it has no business having.
+    """
+
+    needs_key = False
+    _clean_text = {}
+
+    def fit(self, items):
+        """Index each pair's clean text so the injected half can be given its state."""
+        self._clean_text = {
+            item["pair_id"]: item["text"]
+            for item in items
+            if not item["ground_truth"]["has_error"]
+        }
+
+    def state_for(self, item):
+        # plain lookup, not getattr with a default: silently falling back to the
+        # injected text as its own "clean" twin is the one failure this must not hide
+        return oracle_state(self._clean_text[item["pair_id"]])
+
+    def __call__(self, item):
+        verifier = self.verifier()
+        before = verifier.input_tokens
+        state = self.state_for(item)
+        # index into the unfiltered split, matching how bench records paragraph_index
+        paragraphs = item["text"].split("\n\n")
+        flags, confidences = [], []
+        for paragraph in paragraphs:
+            try:
+                contradicts, confidence = verifier.check(state, paragraph)
+            except Exception as exc:
+                fatal = classify_api_error(exc)
+                if fatal:
+                    raise RunAborted(fatal) from exc
+                self.api_failures += 1
+                self.api_failure_notes.append(f"{type(exc).__name__}: {str(exc)[:160]}")
+                contradicts, confidence = False, 0.0
+            flags.append(contradicts)
+            confidences.append(confidence if contradicts else 1.0 - confidence)
+        flagged = [index for index, flag in enumerate(flags) if flag]
+        return Prediction(
+            has_error=bool(flagged),
+            paragraph_index=flagged[0] if flagged else None,
+            confidence=max(confidences) if confidences else None,
+            paragraph_flags=flags,
+            cost_usd=0.0,
+            input_tokens=verifier.input_tokens - before,
+            note=f"{len(flagged)}/{len(paragraphs)} paragraphs flagged against oracle state",
+        )
+
+
+class LayaOraclePredictor(OracleGatePredictor):
+    """Laya gating each paragraph against an oracle state."""
+
+    provider = "laya_oracle"
+
+    def __init__(self, model="convaiinnovations/laya", subfolder=None, **kw):
+        kw["rates"] = (0.0, 0.0)
+        super().__init__(model=model, **kw)
+        self.subfolder = subfolder
+        self.predictor_name = f"laya_oracle_{subfolder or 'english'}_{self.question}"
+
+    def make_verifier(self):
+        import pipeline
+
+        return pipeline.LayaVerifier(self.model, subfolder=self.subfolder,
+                                     question=self.question)
+
+
+class LocalOraclePredictor(OracleGatePredictor):
+    """An open-source LLM gating the same paragraphs against the same oracle state.
+
+    The controlled comparison the architecture argument needs: this and laya_oracle
+    differ in exactly one thing, which model answers the gate question. A System One
+    model beating a generative one is evidence for the design; losing to it says the
+    cheap gate is the wrong component rather than a cheaper one.
+    """
+
+    provider = "local_oracle"
+
+    def __init__(self, model="llama3.1:8b", **kw):
+        kw["rates"] = (0.0, 0.0)
+        super().__init__(model=model, **kw)
+        self.predictor_name = f"local_oracle_{model}_{self.question}"
+
+    def make_verifier(self):
+        import pipeline
+
+        return pipeline.LocalVerifier(self.model, question=self.question)
+
+
+predictor("laya_oracle", kind="model", needs_key=False)(LayaOraclePredictor())
+predictor("local_oracle", kind="model", needs_key=False)(LocalOraclePredictor())
+
 
 
 
@@ -1221,6 +1373,8 @@ PROVIDERS = {
     "hybrid_local": HybridLocalPredictor,
     "laya": LayaPredictor,
     "laya_hybrid": LayaHybridPredictor,
+    "laya_oracle": LayaOraclePredictor,
+    "local_oracle": LocalOraclePredictor,
 }
 DEFAULT_MODELS = {
     "llm": "claude-opus-5",
@@ -1231,6 +1385,8 @@ DEFAULT_MODELS = {
     "hybrid_local": "llama3.1:8b",
     "laya": "convaiinnovations/laya",
     "laya_hybrid": "llama3.1:8b",
+    "laya_oracle": "convaiinnovations/laya",
+    "local_oracle": "llama3.1:8b",
 }
 
 
@@ -1255,19 +1411,27 @@ def load_items(corpus, split=None, rule=None, limit=None):
 
 
 def write_results(name, corpus, items, scores, extra=None, kind="attack"):
-    """Write one predictor's results to results/<name>.json and return the path."""
+    """Write one predictor's results to results/<name>.json and return the path.
+
+    A partial run gets a suffixed filename so it cannot overwrite a full-split result.
+    Without that, `run X --limit 60` silently replaces the 410-item row of the same
+    predictor and the leaderboard reports the smaller run's wider interval as if it
+    were the full one.
+    """
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    pairs = len({item["pair_id"] for item in items})
     payload = {
-        "predictor": name,
+        "predictor": name if pairs >= PARTIAL_RUN_PAIRS else f"{name} ({pairs} pairs)",
         "kind": kind,
         "corpus": str(Path(corpus).name),
         "items": len(items),
-        "pairs": len({item["pair_id"] for item in items}),
+        "pairs": pairs,
         "novels": len({item["novel_id"] for item in items}),
         **(extra or {}),
         **scores.summary(),
     }
-    path = RESULTS_DIR / f"{name}.json"
+    suffix = "" if pairs >= PARTIAL_RUN_PAIRS else f"__{pairs}pairs"
+    path = RESULTS_DIR / f"{name}{suffix}.json"
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path, payload
 
@@ -1305,7 +1469,7 @@ def cmd_run(args):
             kwargs["rates"] = rates
         if args.predictor == "local" and args.base_url:
             kwargs["base_url"] = args.base_url
-        if args.predictor.startswith("laya") and args.subfolder:
+        if args.subfolder:
             kwargs["subfolder"] = args.subfolder
         if args.question:
             kwargs["question"] = args.question
