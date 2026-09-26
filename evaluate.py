@@ -93,6 +93,7 @@ class Scores:
     input_tokens: int = 0
     output_tokens: int = 0
     latencies: list = field(default_factory=list)
+    confidences: list = field(default_factory=list)
     per_rule: dict = field(default_factory=lambda: defaultdict(lambda: [0, 0]))
     per_novel: dict = field(default_factory=lambda: defaultdict(lambda: [0, 0]))
 
@@ -132,6 +133,32 @@ class Scores:
         return self.localized / self.true_positive if self.true_positive else 0.0
 
     @property
+    def roc_auc(self):
+        """Threshold-free separation, when the predictor reports a confidence.
+
+        J and F1 both depend on where a decision boundary was drawn; AUC does not, so
+        it distinguishes "cannot separate the classes at all" from "separates them but
+        is thresholded badly". Returns None when no confidences were reported rather
+        than a misleading 0.5.
+        """
+        positives = [c for c, truth in self.confidences if truth]
+        negatives = [c for c, truth in self.confidences if not truth]
+        if not positives or not negatives:
+            return None
+        ranked = sorted(self.confidences, key=lambda row: row[0])
+        rank_sum, index = 0.0, 0
+        while index < len(ranked):
+            end = index
+            while end < len(ranked) and ranked[end][0] == ranked[index][0]:
+                end += 1
+            average_rank = (index + end + 1) / 2
+            rank_sum += sum(average_rank for _, truth in ranked[index:end] if truth)
+            index = end
+        return (rank_sum - len(positives) * (len(positives) + 1) / 2) / (
+            len(positives) * len(negatives)
+        )
+
+    @property
     def recall_interval(self):
         return wilson_interval(self.true_positive, self.true_positive + self.false_negative)
 
@@ -160,6 +187,7 @@ class Scores:
             "youden_j_ci95": [round(j_lo, 4), round(j_hi, 4)],
             "youden_j_significant": bool(j_lo > 0 or j_hi < 0),
             "youden_j_verdict": j_verdict(j_lo, j_hi),
+            "roc_auc": None if self.roc_auc is None else round(self.roc_auc, 4),
             "recall_ci95": [round(v, 4) for v in self.recall_interval],
             "fpr_ci95": [round(v, 4) for v in self.fpr_interval],
             "false_positive_rate": round(self.false_positive_rate, 4),
@@ -198,6 +226,8 @@ def score(items, predict):
         scores.cost_usd += prediction.cost_usd
         scores.input_tokens += prediction.input_tokens
         scores.output_tokens += prediction.output_tokens
+        if prediction.confidence is not None:
+            scores.confidences.append((prediction.confidence, item["ground_truth"]["has_error"]))
         truth = item["ground_truth"]["has_error"]
         if truth:
             rule = item["ground_truth"]["rule"]

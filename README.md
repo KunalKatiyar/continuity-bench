@@ -150,6 +150,41 @@ a generative model's self-reported confidence is not a calibrated probability. R
 record `projected_jev_gate_usd`, which applies TypeSafe's published rate to measured gate
 tokens. A projection, labelled as one.
 
+## The NLI framing, and what it found
+
+A contradiction between two paragraphs is natural language inference: premise = what
+the story established, hypothesis = the new paragraph. `nli.py` tests that with an
+off-the-shelf MNLI encoder, no prompting and no API, scoring every ordered pair of
+paragraphs in a passage and taking the maximum.
+
+Full dev split, 27,018 pairs, `DeBERTa-v3-base-mnli-fever-anli`:
+
+| rule | AUC | n | reading |
+|---|---|---|---|
+| `character_swap` | **0.5018** | 402 | chance. no separation at all |
+| `trait_flip` | 0.5556 | 6 | no statistical power |
+| `timeline_weekday` | 1.0000 | 2 | no statistical power |
+
+AUC is reported because it needs no threshold: it says whether the classes can be
+separated *at any* cut point, which J and F1 cannot.
+
+**`character_swap` is not an NLI contradiction, and that is the finding.** "Elizabeth
+walked in" and "Wickham crossed the room" are not contradictory propositions; both can
+be true. The error is that Wickham is not *in the scene* — a presupposition failure
+that needs state tracking, not entailment.
+
+I suspected truncation was confounding this, since 22% of pairs hit the old 256-token
+limit and `longest_first` can clip the hypothesis. Fixed it (512 tokens, hypothesis
+clipped explicitly so the premise is what gives) and re-ran: AUC moved 0.5031 → 0.5024.
+Not a truncation artifact.
+
+The uncomfortable conclusion is that **the corpus cannot currently tell "models are bad
+at continuity" apart from "we asked the wrong question about the wrong error type".**
+98% of it is an error type that does not match the question every predictor is asked,
+and the 2% that does match has n=6. That reframes every J ≈ 0 on the board, and it is
+the strongest argument yet for the LLM injector: regex can only mass-produce the one
+error type that fits the question worst.
+
 ## The corpus
 
 272 matched pairs, 544 items, 27 novels. Deterministic given `--seed`: same inputs,

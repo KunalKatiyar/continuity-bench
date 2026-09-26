@@ -15,6 +15,7 @@
   ],
   "youden_j_significant": true,
   "youden_j_verdict": "effect",
+  "roc_auc": null,
   "recall_ci95": [
     0.6415,
     0.75

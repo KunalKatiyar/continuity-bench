@@ -1,0 +1,85 @@
+{
+  "predictor": "nli_DeBERTa-v3-base-mnli-fever-anli",
+  "kind": "model",
+  "corpus": "continuity_v0.jsonl",
+  "items": 410,
+  "pairs": 205,
+  "novels": 20,
+  "model": "MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli",
+  "threshold": 0.5,
+  "best_threshold_fitted": 0.970215,
+  "best_threshold_j_upper_bound": 0.0195,
+  "per_rule_auc": {
+    "character_swap": {
+      "auc": 0.5018,
+      "items": 402,
+      "best_j": 0.0199
+    },
+    "timeline_weekday": {
+      "auc": 1.0,
+      "items": 2,
+      "best_j": null
+    },
+    "trait_flip": {
+      "auc": 0.5556,
+      "items": 6,
+      "best_j": 0.3333
+    }
+  },
+  "precision": 0.4986,
+  "recall": 0.8976,
+  "f1": 0.6411,
+  "youden_j": -0.0049,
+  "youden_j_ci95": [
+    -0.0875,
+    0.0779
+  ],
+  "youden_j_significant": false,
+  "youden_j_verdict": "no_effect",
+  "roc_auc": 0.5024,
+  "recall_ci95": [
+    0.8485,
+    0.932
+  ],
+  "fpr_ci95": [
+    0.8541,
+    0.936
+  ],
+  "false_positive_rate": 0.9024,
+  "localization": 0.0489,
+  "true_positive": 184,
+  "false_positive": 185,
+  "true_negative": 20,
+  "false_negative": 21,
+  "cost_usd": 0.0,
+  "input_tokens": 0,
+  "output_tokens": 0,
+  "median_latency_s": 0.0,
+  "recall_by_rule": {
+    "character_swap": 0.8955,
+    "timeline_weekday": 1.0,
+    "trait_flip": 1.0
+  },
+  "recall_by_novel": {
+    "pg1023": 0.6923,
+    "pg120": 0.8333,
+    "pg121": 0.75,
+    "pg1260": 0.8333,
+    "pg1342": 0.7778,
+    "pg1400": 0.9231,
+    "pg155": 1.0,
+    "pg1661": 1.0,
+    "pg174": 1.0,
+    "pg2701": 1.0,
+    "pg271": 0.8333,
+    "pg2852": 1.0,
+    "pg43": 0.5,
+    "pg514": 0.9167,
+    "pg74": 0.9167,
+    "pg76": 0.9167,
+    "pg766": 0.9231,
+    "pg768": 1.0,
+    "pg84": 1.0,
+    "pg98": 1.0
+  }
+}

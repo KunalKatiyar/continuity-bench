@@ -10,6 +10,12 @@ test: that a cheap non-generative classifier plus selective LLM escalation match
 full-context LLM accuracy for a fraction of the cost. Until a Jev run exists the hero
 says so rather than showing a placeholder number.
 
+Two panels, never three. Recall-against-FPR replaced a bar chart of J because J is
+exactly the vertical distance from that chart's diagonal, so the two could never
+disagree - the same reason balanced accuracy is not reported. The F1 panel stays
+because it argues something different, and visibly: a run that flags everything draws
+a full-length F1 bar while sitting on the diagonal.
+
 Writes site/index.html - one self-contained file, no build step and no JavaScript
 libraries, so it can be served straight from GitHub Pages.
 
@@ -78,6 +84,87 @@ def load_results(results_dir):
         rows.append(row)
     rows.sort(key=lambda r: (-r["youden_j"], r["predictor"]))
     return rows
+
+
+def mark(x, y, kind, tip):
+    """One data point: a surface-coloured ring behind a filled dot, plus its tooltip.
+
+    The ring is what keeps overlapping points readable, and CSS hover sizing assumes
+    these radii, so the contract lives here rather than in each chart.
+    """
+    _, light, dark = KINDS[kind]
+    return (
+        f'<g class="mark"><title>{esc(tip)}</title>'
+        f'<circle cx="{x:.1f}" cy="{y:.1f}" r="7" class="ring"/>'
+        f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4.5" '
+        f'style="--c:{light};--cd:{dark}" class="dot"/></g>'
+    )
+
+
+def operating_points(rows):
+    """Recall against false-positive rate, with the chance diagonal drawn.
+
+    This is the chart that actually compares models on this benchmark. J collapses a
+    run to one number, so three models that fail in completely different ways - one
+    flagging everything, one flagging nothing - all render as bars near zero. In this
+    space they sit far apart along the diagonal, and the diagonal itself is the point:
+    distance above it is discrimination, position along it is just how trigger-happy
+    the model is.
+
+    Top-left is the good corner. Anything on the line is guessing, however confidently.
+    """
+    # a square plot, so the axes share a scale; width follows from it rather than
+    # being declared and then silently ignored
+    height, pad_l, pad_t, pad_b = 360, 58, 20, 48
+    pad_r = 96
+    plot = height - pad_t - pad_b
+    width = pad_l + plot + pad_r
+    label_flip = 0.62
+
+    def sx(value):
+        return pad_l + value * plot
+
+    def sy(value):
+        return pad_t + plot - value * plot
+
+    parts = [
+        f'<svg viewBox="0 0 {width} {height}" role="img" class="chart" '
+        f'aria-label="Recall against false-positive rate for each run">'
+    ]
+    for i in range(6):
+        v = i / 5
+        parts.append(
+            f'<line x1="{pad_l}" y1="{sy(v):.1f}" x2="{sx(1):.1f}" y2="{sy(v):.1f}" class="grid"/>'
+            f'<line x1="{sx(v):.1f}" y1="{pad_t}" x2="{sx(v):.1f}" y2="{sy(0):.1f}" class="grid"/>'
+            f'<text x="{pad_l - 9}" y="{sy(v) + 4:.1f}" class="tick tick-y">{v:.1f}</text>'
+            f'<text x="{sx(v):.1f}" y="{sy(0) + 18:.1f}" class="tick tick-x">{v:.1f}</text>'
+        )
+    parts.append(
+        f'<line x1="{pad_l}" y1="{sy(0):.1f}" x2="{sx(1):.1f}" y2="{sy(1):.1f}" class="floor"/>'
+        f'<text x="{sx(0.60):.1f}" y="{sy(0.53):.1f}" class="floor-label">guessing</text>'
+        f'<line x1="{pad_l}" y1="{sy(0):.1f}" x2="{sx(1):.1f}" y2="{sy(0):.1f}" class="axis"/>'
+        f'<line x1="{pad_l}" y1="{pad_t}" x2="{pad_l}" y2="{sy(0):.1f}" class="axis"/>'
+        f'<text x="{sx(0.5):.1f}" y="{height - 8}" class="axis-title">false-positive rate</text>'
+        f'<text x="14" y="{sy(0.5):.1f}" class="axis-title" '
+        f'transform="rotate(-90 14 {sy(0.5):.1f})">recall</text>'
+    )
+    placed = []
+    for row in rows:
+        x, y = sx(row["false_positive_rate"]), sy(row["recall"])
+        parts.append(mark(x, y, row["kind"], tooltip(row, "youden_j", "J")))
+        # y is the recall value here, so nudging a label to a free slot would put a
+        # name beside a number that is not its own. Drop it and let hover and the
+        # table carry it, which is the rule scatter() already follows.
+        if any(abs(y - py) < 12 and abs(x - px) < plot / 4 for px, py in placed):
+            continue
+        placed.append((x, y))
+        anchor, offset = ("end", -10) if x > sx(label_flip) else ("start", 10)
+        parts.append(
+            f'<text x="{x + offset:.1f}" y="{y + 4:.1f}" class="point-label" '
+            f'text-anchor="{anchor}">{esc(row["predictor"])}</text>'
+        )
+    parts.append("</svg>")
+    return "".join(parts)
 
 
 def has_paid_run(rows):
@@ -149,14 +236,8 @@ def scatter(rows, y_key, y_label, floor=None, floor_label=None):
     placed = []
     for row in rows:
         x, y = sx(row["cost_usd"]), sy(row[y_key])
-        _, light, dark = KINDS[row["kind"]]
-        parts.append(
-            f'<g class="mark"><title>{esc(tooltip(row, y_key, y_label))}</title>'
-            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="7" class="ring"/>'
-            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4.5" '
-            f'style="--c:{light};--cd:{dark}" class="dot"/></g>'
-        )
-        if not any(abs(y - py) < 12 and abs(x - px) < 80 for px, py in placed):
+        parts.append(mark(x, y, row["kind"], tooltip(row, y_key, y_label)))
+        if not any(abs(y - py) < 12 and abs(x - px) < plot_w / 4 for px, py in placed):
             placed.append((x, y))
             parts.append(
                 f'<text x="{x + 10:.1f}" y="{y + 4:.1f}" class="point-label">'
@@ -247,6 +328,16 @@ def ci95(row):
     return f"{lo:+.3f} to {hi:+.3f}{VERDICT_MARK.get(verdict, '')}"
 
 
+def auc_cell(row):
+    """AUC when the run reported confidences, an em dash when it could not.
+
+    A predictor that only returns yes/no has no ranking to score, and printing 0.500
+    there would read as "cannot separate" rather than "did not say".
+    """
+    auc = row.get("roc_auc")
+    return "&mdash;" if auc is None else f"{auc:.3f}"
+
+
 def per_passage(row):
     """Cost of one passage for this run."""
     return row["cost_usd"] / row["items"] if row["items"] else 0.0
@@ -279,8 +370,8 @@ def legend(rows):
 
 def table(rows):
     head = (
-        "<thead><tr><th>predictor</th><th>J</th><th>J 95% CI</th><th>F1</th>"
-        "<th>precision</th><th>recall</th><th>FPR</th><th>localization</th>"
+        "<thead><tr><th>predictor</th><th>J</th><th>J 95% CI</th><th>recall</th>"
+        "<th>FPR</th><th>AUC</th><th>F1</th><th>precision</th><th>localization</th>"
         "<th>$/passage</th><th>items</th></tr></thead>"
     )
     body = []
@@ -411,12 +502,6 @@ JEV_PREFIX = "jev"
 def jev_row(rows):
     """The Jev pipeline's run, if one has been recorded."""
     return next((r for r in rows if r["predictor"].startswith(JEV_PREFIX)), None)
-
-
-def best_of_kind(rows, kind):
-    return max(
-        (r for r in rows if r["kind"] == kind), key=lambda r: r["youden_j"], default=None
-    )
 
 
 def hero(rows):
@@ -629,9 +714,11 @@ def render_public(rows, corpus_stats):
         + "</div></div>"
         if has_paid_run(contenders)
         else '<div class="panels">'
-        '<div class="panel"><h3>Discrimination</h3>'
-        '<p class="note">J = recall &minus; false-positive rate.</p>'
-        + bars(contenders, "youden_j", "J = recall - FPR")
+        '<div class="panel"><h3>How each run behaves</h3>'
+        '<p class="note">Recall against false-positive rate. The diagonal is guessing: '
+        "distance above it is J, position along it is only how readily a run flags "
+        "anything. Top-left is the good corner.</p>"
+        + operating_points(contenders)
         + "</div>"
         '<div class="panel"><h3>F1, for comparison</h3>'
         '<p class="note">Dashed line: flagging every passage scores 0.667 while '
