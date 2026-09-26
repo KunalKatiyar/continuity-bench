@@ -1,5 +1,6 @@
 # continuity-bench
 
+[Write-up](WRITEUP.md) ·
 [Live leaderboard](https://kunalkatiyar.github.io/continuity-bench-leaderboard/) ·
 [leaderboard repo](https://github.com/KunalKatiyar/continuity-bench-leaderboard)
 
