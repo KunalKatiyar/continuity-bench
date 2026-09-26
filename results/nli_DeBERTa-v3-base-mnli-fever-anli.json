@@ -37,6 +37,10 @@
   "youden_j_significant": false,
   "youden_j_verdict": "no_effect",
   "roc_auc": 0.5024,
+  "paragraph_youden_j": -0.0117,
+  "paragraph_recall": 0.2439,
+  "paragraph_fpr": 0.2556,
+  "paragraphs_judged": 4916,
   "recall_ci95": [
     0.8485,
     0.932

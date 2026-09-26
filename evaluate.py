@@ -43,6 +43,7 @@ class Prediction:
     paragraph_index: int | None = None
     cost_usd: float = 0.0
     confidence: float | None = None
+    paragraph_flags: list | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     note: str = ""
@@ -90,10 +91,15 @@ class Scores:
     localized: int = 0
     cost_usd: float = 0.0
     confidence: float | None = None
+    paragraph_flags: list | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     latencies: list = field(default_factory=list)
     confidences: list = field(default_factory=list)
+    paragraph_tp: int = 0
+    paragraph_fp: int = 0
+    paragraph_tn: int = 0
+    paragraph_fn: int = 0
     per_rule: dict = field(default_factory=lambda: defaultdict(lambda: [0, 0]))
     per_novel: dict = field(default_factory=lambda: defaultdict(lambda: [0, 0]))
 
@@ -131,6 +137,17 @@ class Scores:
     @property
     def localization(self):
         return self.localized / self.true_positive if self.true_positive else 0.0
+
+    @property
+    def paragraph_scores(self):
+        """Paragraph-level Scores, or None when no predictor judged paragraphs."""
+        counted = self.paragraph_tp + self.paragraph_fp + self.paragraph_tn + self.paragraph_fn
+        if not counted:
+            return None
+        return Scores(
+            true_positive=self.paragraph_tp, false_positive=self.paragraph_fp,
+            true_negative=self.paragraph_tn, false_negative=self.paragraph_fn,
+        )
 
     @property
     def roc_auc(self):
@@ -188,6 +205,19 @@ class Scores:
             "youden_j_significant": bool(j_lo > 0 or j_hi < 0),
             "youden_j_verdict": j_verdict(j_lo, j_hi),
             "roc_auc": None if self.roc_auc is None else round(self.roc_auc, 4),
+            **(
+                {}
+                if self.paragraph_scores is None
+                else {
+                    "paragraph_youden_j": round(self.paragraph_scores.youden_j, 4),
+                    "paragraph_recall": round(self.paragraph_scores.recall, 4),
+                    "paragraph_fpr": round(self.paragraph_scores.false_positive_rate, 4),
+                    "paragraphs_judged": (
+                        self.paragraph_tp + self.paragraph_fp
+                        + self.paragraph_tn + self.paragraph_fn
+                    ),
+                }
+            ),
             "recall_ci95": [round(v, 4) for v in self.recall_interval],
             "fpr_ci95": [round(v, 4) for v in self.fpr_interval],
             "false_positive_rate": round(self.false_positive_rate, 4),
@@ -209,6 +239,28 @@ class Scores:
         }
 
 
+def _count_paragraphs(scores, item, flags):
+    """Accumulate paragraph-level outcomes for a predictor that judges each paragraph.
+
+    Passage-level scoring lets one changed token in ~1,250 decide a whole label, which
+    is a needle-in-haystack framing and wastes most of the corpus: 410 passages give
+    410 decisions. The same passages hold ~4,900 paragraphs, so a predictor that judges
+    each one yields an order of magnitude more decisions and correspondingly tighter
+    intervals - and it is the unit the pipeline actually works in.
+    """
+    truth = (item["injected_location"] or {}).get("paragraph_index")
+    for index, flagged in enumerate(flags):
+        is_injected = truth is not None and index == truth
+        if is_injected and flagged:
+            scores.paragraph_tp += 1
+        elif is_injected:
+            scores.paragraph_fn += 1
+        elif flagged:
+            scores.paragraph_fp += 1
+        else:
+            scores.paragraph_tn += 1
+
+
 def score(items, predict):
     """Run a predictor over items and return Scores.
 
@@ -226,6 +278,8 @@ def score(items, predict):
         scores.cost_usd += prediction.cost_usd
         scores.input_tokens += prediction.input_tokens
         scores.output_tokens += prediction.output_tokens
+        if prediction.paragraph_flags is not None:
+            _count_paragraphs(scores, item, prediction.paragraph_flags)
         if prediction.confidence is not None:
             scores.confidences.append((prediction.confidence, item["ground_truth"]["has_error"]))
         truth = item["ground_truth"]["has_error"]
@@ -253,6 +307,7 @@ PREDICTORS = {}
 
 
 HEURISTIC_KINDS = ("attack", "floor", "diagnostic")
+COSTLESS_KINDS = ("attack", "floor", "diagnostic")
 
 
 def predictor(name, kind="attack", needs_key=False):
@@ -968,10 +1023,15 @@ class JevHybridPredictor(VerdictPredictor):
         self.escalations += result.escalations
         self.paragraphs_checked += result.paragraphs_checked
         confirmed = result.confirmed
+        flagged = {finding.paragraph_index for finding in confirmed}
         jev_tokens = verifier.input_tokens - before_tokens
         return Prediction(
             has_error=bool(confirmed),
             paragraph_index=confirmed[0].paragraph_index if confirmed else None,
+            paragraph_flags=[
+                index in flagged
+                for index in range(len(item["text"].split("\n\n")))
+            ],
             cost_usd=self.price(jev_tokens, 0) + (self.helper_cost - before_cost),
             confidence=confirmed[0].jev_confidence if confirmed else None,
             input_tokens=jev_tokens,
@@ -1001,6 +1061,7 @@ class HybridLocalPredictor(VerdictPredictor):
 
     provider = "hybrid_local"
     needs_key = False
+    gate_prices_as_jev = True
 
     def __init__(self, model="llama3.1:8b", gate_model=None, **kw):
         kw.setdefault("rates", (0.0, 0.0))
@@ -1067,9 +1128,14 @@ class HybridLocalPredictor(VerdictPredictor):
         self.paragraphs_checked += result.paragraphs_checked
         self.gate_input_tokens += verifier.input_tokens - before
         confirmed = result.confirmed
+        flagged = {finding.paragraph_index for finding in confirmed}
         return Prediction(
             has_error=bool(confirmed),
             paragraph_index=confirmed[0].paragraph_index if confirmed else None,
+            paragraph_flags=[
+                index in flagged
+                for index in range(len(item["text"].split("\n\n")))
+            ],
             cost_usd=0.0,
             confidence=confirmed[0].jev_confidence if confirmed else None,
             input_tokens=verifier.input_tokens - before,
@@ -1078,6 +1144,71 @@ class HybridLocalPredictor(VerdictPredictor):
 
 
 predictor("hybrid_local", kind="model", needs_key=False)(HybridLocalPredictor())
+
+class LayaHybridPredictor(HybridLocalPredictor):
+    """The proposed architecture with an open-weights System One model in the gate.
+
+    Identical to JevHybridPredictor in shape - extract state, gate every paragraph,
+    escalate what the gate flags - but the gate is Laya, which is Apache 2.0 and local,
+    so this runs today without a key. It is the first configuration on this leaderboard
+    that tests the actual thesis rather than a stand-in, because Laya is a System One
+    model and LocalVerifier was a generative model impersonating one.
+
+    Cost is still reported as zero: the gate genuinely costs no API money, and the
+    escalator here is a local model too. `gate_input_tokens` is recorded so the same
+    run can be priced against any hosted System One model's published rate.
+    """
+
+    provider = "laya_hybrid"
+    needs_key = False
+    gate_prices_as_jev = False
+
+    def __init__(self, model="llama3.1:8b", gate_model="convaiinnovations/laya",
+                 subfolder=None, **kw):
+        super().__init__(model=model, gate_model=gate_model, **kw)
+        self.subfolder = subfolder
+        label = (subfolder or "english")
+        self.predictor_name = f"laya_hybrid_{label}_{model}"
+
+    def make_verifier(self):
+        import pipeline
+
+        return pipeline.LayaVerifier(self.gate_model, subfolder=self.subfolder)
+
+
+class LayaPredictor(JevPredictor):
+    """The naive System One pass with Laya in the gate, no LLM and no key.
+
+    Subclasses JevPredictor rather than copying it: the naive pass is the same
+    procedure with a different gate, and the copy had already drifted - it lost the
+    error handling that lets one bad forward pass be recorded and skipped instead of
+    ending a 410-item run with nothing to show.
+
+    Expected to struggle for the same reason the Jev baseline is: a raw passage is not
+    the compact extracted state a System One model checks against, and at 512 tokens
+    most of it is cut. The gap between this and laya_hybrid is what says whether the
+    extraction step earns its cost.
+    """
+
+    provider = "laya"
+    needs_key = False
+    note_prefix = "laya"
+
+    def __init__(self, model="convaiinnovations/laya", subfolder=None, **kw):
+        kw["rates"] = (0.0, 0.0)
+        super().__init__(model=model, **kw)
+        self.subfolder = subfolder
+        self.predictor_name = f"laya_{subfolder or 'english'}"
+
+    def make_verifier(self):
+        import pipeline
+
+        return pipeline.LayaVerifier(self.model, subfolder=self.subfolder)
+
+
+predictor("laya", kind="model", needs_key=False)(LayaPredictor())
+predictor("laya_hybrid", kind="model", needs_key=False)(LayaHybridPredictor())
+
 
 
 
@@ -1088,6 +1219,8 @@ PROVIDERS = {
     "jev": JevPredictor,
     "jev_hybrid": JevHybridPredictor,
     "hybrid_local": HybridLocalPredictor,
+    "laya": LayaPredictor,
+    "laya_hybrid": LayaHybridPredictor,
 }
 DEFAULT_MODELS = {
     "llm": "claude-opus-5",
@@ -1096,6 +1229,8 @@ DEFAULT_MODELS = {
     "jev": "typesafe:jev-latest",
     "jev_hybrid": "typesafe:jev-latest",
     "hybrid_local": "llama3.1:8b",
+    "laya": "convaiinnovations/laya",
+    "laya_hybrid": "llama3.1:8b",
 }
 
 
@@ -1170,6 +1305,10 @@ def cmd_run(args):
             kwargs["rates"] = rates
         if args.predictor == "local" and args.base_url:
             kwargs["base_url"] = args.base_url
+        if args.predictor.startswith("laya") and args.subfolder:
+            kwargs["subfolder"] = args.subfolder
+        if args.question:
+            kwargs["question"] = args.question
         predict = PROVIDERS[args.predictor](**kwargs)
     name = getattr(predict, "predictor_name", args.predictor)
     if predict.kind == "model" and not predict.needs_key:
@@ -1199,7 +1338,7 @@ def cmd_run(args):
         return 3
     extra = {
         key: value
-        for key in ("model", "effort")
+        for key in ("model", "effort", "question")
         if (value := getattr(predict, key, None)) is not None
     }
     import pipeline as _pipeline
@@ -1212,9 +1351,13 @@ def cmd_run(args):
         )
     if getattr(predict, "gate_input_tokens", 0):
         extra["gate_input_tokens"] = predict.gate_input_tokens
-        extra["projected_jev_gate_usd"] = round(
-            _pipeline.project_jev_cost(predict.gate_input_tokens), 6
-        )
+        # only project a Jev price for a gate that is standing in for Jev. Pricing
+        # Laya's tokens at TypeSafe's published rate would publish a competitor's
+        # price list as this predictor's cost.
+        if getattr(predict, "gate_prices_as_jev", False):
+            extra["projected_jev_gate_usd"] = round(
+                _pipeline.project_jev_cost(predict.gate_input_tokens), 6
+            )
     failures = getattr(predict, "parse_failures", 0)
     api_failures = getattr(predict, "api_failures", 0)
     if failures:
@@ -1295,6 +1438,9 @@ def main(argv=None):
     run.add_argument("--model", help="model id, for a provider predictor")
     run.add_argument("--effort", default="high", help="reasoning effort, where the provider has one")
     run.add_argument("--base-url", help="OpenAI-compatible endpoint, for the local predictor")
+    run.add_argument("--subfolder", help="checkpoint variant, for the laya predictors")
+    run.add_argument("--question", choices=("contradiction", "presupposition"),
+                     help="which declared gate question to ask")
     run.add_argument("--input-rate", type=float, help="USD per million input tokens")
     run.add_argument("--output-rate", type=float, help="USD per million output tokens")
     run.add_argument("--yes", action="store_true", help="confirm spending on a paid predictor")

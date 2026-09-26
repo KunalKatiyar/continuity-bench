@@ -6,3 +6,4 @@ __pycache__/
 *.pyc
 .venv/
 nli_scores*.json
+human_answers.json

@@ -1,0 +1,66 @@
+{
+  "predictor": "laya_english",
+  "kind": "model",
+  "corpus": "continuity_v0.jsonl",
+  "items": 410,
+  "pairs": 205,
+  "novels": 20,
+  "model": "convaiinnovations/laya",
+  "effort": "high",
+  "precision": 0.5217,
+  "recall": 0.1171,
+  "f1": 0.1912,
+  "youden_j": 0.0098,
+  "youden_j_ci95": [
+    -0.0772,
+    0.0963
+  ],
+  "youden_j_significant": false,
+  "youden_j_verdict": "no_effect",
+  "roc_auc": 0.4967,
+  "recall_ci95": [
+    0.0799,
+    0.1683
+  ],
+  "fpr_ci95": [
+    0.0719,
+    0.1571
+  ],
+  "false_positive_rate": 0.1073,
+  "localization": 0.0,
+  "true_positive": 24,
+  "false_positive": 22,
+  "true_negative": 183,
+  "false_negative": 181,
+  "cost_usd": 0.0,
+  "input_tokens": 209920,
+  "output_tokens": 0,
+  "median_latency_s": 0.1129,
+  "recall_by_rule": {
+    "character_swap": 0.1144,
+    "timeline_weekday": 0.0,
+    "trait_flip": 0.3333
+  },
+  "recall_by_novel": {
+    "pg1023": 0.0769,
+    "pg120": 0.0833,
+    "pg121": 0.0,
+    "pg1260": 0.1667,
+    "pg1342": 0.0,
+    "pg1400": 0.1538,
+    "pg155": 0.0,
+    "pg1661": 0.1667,
+    "pg174": 0.2222,
+    "pg2701": 0.0833,
+    "pg271": 0.0833,
+    "pg2852": 0.1667,
+    "pg43": 0.0,
+    "pg514": 0.1667,
+    "pg74": 0.0833,
+    "pg76": 0.1667,
+    "pg766": 0.0,
+    "pg768": 0.0,
+    "pg84": 0.0833,
+    "pg98": 0.3333
+  }
+}

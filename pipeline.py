@@ -96,6 +96,28 @@ class StoryState:
         )
 
 
+GATE_PROMPT = """Established facts:
+{state}
+
+Paragraph to check:
+{paragraph}"""
+
+# Two declared questions, not one silently-improved one. The NLI result said the
+# corpus's dominant error type is presupposition failure rather than contradiction, so
+# asking about presence is the free experiment that tests it - but swapping the wording
+# in place would invalidate every recorded run and confound a gate comparison with a
+# question change. They are variants, run separately, and the delta between them on the
+# same items is the measurement.
+GATE_QUESTIONS = {
+    "contradiction": "Does this paragraph contradict a fact in the established state?",
+    "presupposition": (
+        "Does this paragraph contradict a fact in the established state, or refer to a "
+        "character who is not present in this scene?"
+    ),
+}
+DEFAULT_QUESTION = "contradiction"
+
+
 EXTRACTION_PROMPT = """Read this passage of fiction and list the facts a later
 paragraph could contradict. Record only what the text states or clearly implies - never
 infer a trait that is not there, and never invent one to fill a field.
@@ -164,8 +186,9 @@ class JevVerifier:
     TYPESAFE_API_KEY, or ~/.typesafe-key.
     """
 
-    def __init__(self, model="typesafe:jev-latest"):
+    def __init__(self, model="typesafe:jev-latest", question=DEFAULT_QUESTION):
         self.model = model
+        self.question = question
         self._agent = None
         self.input_tokens = 0
 
@@ -192,10 +215,7 @@ class JevVerifier:
 
     def check(self, state, paragraph):
         """Return (contradicts, confidence) for one paragraph against the state."""
-        prompt = (
-            f"Established facts:\n{state.as_prompt()}\n\n"
-            f"Paragraph to check:\n{paragraph}"
-        )
+        prompt = GATE_PROMPT.format(state=state.as_prompt(), paragraph=paragraph)
         result = self.agent().run_sync(prompt)
         usage = getattr(result, "usage", None)
         self.input_tokens += getattr(usage, "input_tokens", 0) or 0
@@ -277,12 +297,13 @@ class LocalVerifier:
         "additionalProperties": False,
     }
 
-    def __init__(self, model="llama3.1:8b", base_url="http://localhost:11434/v1"):
+    def __init__(self, model="llama3.1:8b", base_url="http://localhost:11434/v1",
+                 question=DEFAULT_QUESTION):
         self.model = model
         self.base_url = base_url
+        self.question = question
         self._client = None
         self.input_tokens = 0
-        self.calls = 0
 
     def client(self):
         if self._client is None:
@@ -293,12 +314,8 @@ class LocalVerifier:
 
     def check(self, state, paragraph):
         prompt = (
-            "Established facts about this story:\n"
-            f"{state.as_prompt()}\n\n"
-            "Paragraph to check:\n"
-            f"{paragraph}\n\n"
-            "Does this paragraph contradict an established fact? Give your confidence "
-            "in that answer from 0 to 1."
+            GATE_PROMPT.format(state=state.as_prompt(), paragraph=paragraph)
+            + f"\n\n{GATE_QUESTIONS[self.question]} Give your confidence from 0 to 1."
         )
         response = self.client().chat.completions.create(
             model=self.model,
@@ -311,7 +328,6 @@ class LocalVerifier:
                 "json_schema": {"name": "gate", "strict": True, "schema": self.SCHEMA},
             },
         )
-        self.calls += 1
         self.input_tokens += response.usage.prompt_tokens
         try:
             payload = json.loads(response.choices[0].message.content or "")
@@ -323,6 +339,54 @@ class LocalVerifier:
         except (TypeError, ValueError):
             confidence = 0.0
         return bool(payload.get("contradicts_state")), max(0.0, min(1.0, confidence))
+
+
+class LayaVerifier:
+    """An open-weights System One gate: same shape as Jev, Apache 2.0, runs locally.
+
+    Laya takes a state block plus typed questions and answers them in one
+    non-generative forward pass with a calibrated probability, which is the same
+    contract JevVerifier has - so this is a real alternative in that slot rather than
+    a stand-in like LocalVerifier, and it needs no key and costs nothing per call.
+
+    Its 512-token English budget (~320 for state) is smaller than a benchmark passage,
+    which is not a limitation so much as a constraint that forces the architecture this
+    project proposes: you cannot dump a chapter in, you must hand it a compact
+    extracted state. The multilingual checkpoint takes 1,024.
+
+    ponytail: one question per call. Laya answers a whole question set in a single pass,
+    so a real editor pass should ask about traits, presence and timeline together rather
+    than calling once per concern.
+    """
+
+    def __init__(self, model="convaiinnovations/laya", subfolder=None, device=None,
+                 question=DEFAULT_QUESTION):
+        self.model = model
+        self.question = question
+        self.subfolder = subfolder
+        self.device = device
+        self._agent = None
+        self.input_tokens = 0
+
+    def agent(self):
+        if self._agent is None:
+            import laya
+
+            self._agent = laya.load(self.model, subfolder=self.subfolder, device=self.device)
+        return self._agent
+
+    def check(self, state, paragraph):
+        """Return (contradicts, confidence in that answer) for one paragraph."""
+        prompt = GATE_PROMPT.format(state=state.as_prompt(), paragraph=paragraph)
+        question = {"contradicts": {"type": "noul",
+                                    "instructions": GATE_QUESTIONS[self.question]}}
+        result = self.agent().predict(prompt, question)
+        answer = result["answers"]["contradicts"]
+        probability = float(answer.get("noul", 0.0))
+        self.input_tokens += int(result.get("usage", {}).get("input_tokens", 0))
+        # `confidence` is confidence in the answer given, which is what an escalation
+        # band needs: an unsure "no" and an unsure "yes" are both worth a second look.
+        return probability >= 0.5, float(answer.get("confidence", abs(probability - 0.5) * 2))
 
 
 JEV_INPUT_USD_PER_MTOK = 0.042

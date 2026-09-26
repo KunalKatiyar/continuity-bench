@@ -185,6 +185,75 @@ and the 2% that does match has n=6. That reframes every J ≈ 0 on the board, an
 the strongest argument yet for the LLM injector: regex can only mass-produce the one
 error type that fits the question worst.
 
+## An open-weights System One gate
+
+TypeSafe closed Jev signups, but [Laya](https://huggingface.co/convaiinnovations/laya)
+is the same category of model — typed questions over a state block, never generates,
+calibrated probabilities — under Apache 2.0, 421M on a ModernBERT-large backbone,
+running locally. It drops into the `JevVerifier` slot unchanged, and unlike Jev it can
+be fine-tuned.
+
+Its 512-token budget (~320 for state) is smaller than a benchmark passage, which turns
+out to argue *for* the architecture rather than against it: you cannot hand it a
+chapter, you must hand it a compact extracted state.
+
+| run | J | 95% CI | recall | FPR | wall clock |
+|---|---|---|---|---|---|
+| `laya_english` | +0.010 | ±0.087 | 0.117 | 0.107 | **2m15s** |
+| `laya_typed-decisions` | +0.000 | ±0.045 | 0.024 | 0.024 | ~2m |
+
+Both measured nulls, which is the predicted result for a naive pass over a raw passage.
+The number worth keeping is the wall clock: 410 items in 2m15s against `llama3.1:8b`'s
+44 minutes, ~20x. That is the first vendor latency claim in this project that survived
+an independent check.
+
+Two things found by running it that the model card does not say. The shipped checkpoint
+warns at load that it carries an invalid temperature for 11-option choice questions —
+the yes/no path used here is unaffected, but calibration is Laya's headline claim and
+the warning is in the artifact. And the `typed-decisions` checkpoint, the fine-tuned one
+carrying their 0.766 accuracy claim, did *worse* here than the base model, flagging 2.4%
+of anything. Their headline number does not transfer to this task.
+
+## Two declared gate questions
+
+The NLI result said the corpus's dominant error type is presupposition failure, not
+contradiction. Asking the gate about presence as well as contradiction is the free
+experiment that tests it — so it is a declared variant, not an improved wording:
+
+```bash
+.venv/bin/python evaluate.py run laya_hybrid --question contradiction --split dev
+.venv/bin/python evaluate.py run laya_hybrid --question presupposition --split dev
+```
+
+Swapping the wording in place would have invalidated every recorded run and confounded
+a gate comparison with a question change — which is the rule this project already
+applies to providers ("two providers judged on two different prompts is not a
+comparison"). The delta between the two variants on the same items is the measurement
+that separates "models are bad at continuity" from "we asked the wrong question".
+
+## The human baseline
+
+Every approach on the board scores J near zero, and two very different explanations fit:
+the models are bad, or the items are not solvable by a careful reader. Nothing else
+measures the difference.
+
+```bash
+python3 human_baseline.py --n 40      # ~20 minutes, resumable
+python3 human_baseline.py --score     # writes a leaderboard row
+python3 human_baseline.py --review    # what was missed, with the injection explained
+```
+
+It shows one half of each matched pair and never both — the halves differ by a single
+token, so a reader shown both is running the `pair_diff_targeted` attack by hand. No
+feedback during a run, or it measures how fast someone learns the generator. Time per
+passage is recorded, because a reader who needs four minutes is a different proposition
+from one who needs twenty seconds, and the pipeline exists to replace the expensive one.
+
+The row publishes as `kind: human`, not `model`, and is kept off the cost chart. A human
+is the most expensive predictor here; rendering them at $0.00 would make them its
+cheapest point, which is the same failure this project refuses for an unlisted model's
+rate. Their cost axis is seconds per passage.
+
 ## The corpus
 
 272 matched pairs, 544 items, 27 novels. Deterministic given `--seed`: same inputs,

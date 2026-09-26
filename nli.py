@@ -131,9 +131,19 @@ class NLIScorer:
         return [scored[pair] for pair in pairs]
 
 
+def split_paragraphs(text, max_paragraphs=16):
+    """The paragraphs a passage is actually judged on.
+
+    One definition, because sizing a per-paragraph result from a differently-filtered
+    list scores paragraphs that were never put through the model: they come back as a
+    confident "clean" and inflate the true-negative count.
+    """
+    return [p for p in text.split("\n\n") if p.strip()][:max_paragraphs]
+
+
 def paragraph_pairs(text, max_paragraphs=16):
     """Every ordered pair (earlier, later) of paragraphs in a passage."""
-    paragraphs = [p for p in text.split("\n\n") if p.strip()][:max_paragraphs]
+    paragraphs = split_paragraphs(text, max_paragraphs)
     return [
         (paragraphs[i], paragraphs[j], j)
         for j in range(1, len(paragraphs))
@@ -142,13 +152,21 @@ def paragraph_pairs(text, max_paragraphs=16):
 
 
 def score_passage(scorer, text):
-    """Return (max contradiction probability, paragraph index it points at)."""
+    """Return (max contradiction probability, paragraph index, per-paragraph maxima).
+
+    The per-paragraph scores are the same forward passes read a second way: each
+    paragraph's score is the highest contradiction probability against any earlier
+    paragraph. Free, and it is what paragraph-level evaluation needs.
+    """
     triples = paragraph_pairs(text)
     if not triples:
-        return 0.0, None
+        return 0.0, None, []
     scores = scorer.score_pairs([(premise, hypothesis) for premise, hypothesis, _ in triples])
+    per_paragraph = [0.0] * len(split_paragraphs(text))
+    for (_, _, index), value in zip(triples, scores):
+        per_paragraph[index] = max(per_paragraph[index], value)
     best = max(range(len(scores)), key=scores.__getitem__)
-    return scores[best], triples[best][2]
+    return scores[best], triples[best][2], per_paragraph
 
 
 def sweep_thresholds(scored):
@@ -261,8 +279,8 @@ def main(argv=None):
 
     records, probabilities = [], {}
     for n, item in enumerate(items, 1):
-        probability, paragraph = score_passage(scorer, item["text"])
-        probabilities[item["passage_id"]] = (probability, paragraph)
+        probability, paragraph, per_paragraph = score_passage(scorer, item["text"])
+        probabilities[item["passage_id"]] = (probability, paragraph, per_paragraph)
         records.append({
             "passage_id": item["passage_id"],
             "pair_id": item["pair_id"],
@@ -287,11 +305,12 @@ def main(argv=None):
     # the run goes through the shared scorer so it lands on the leaderboard like any
     # other approach, rather than being a number that only exists in a log
     def predict(item):
-        probability, paragraph = probabilities[item["passage_id"]]
+        probability, paragraph, per_paragraph = probabilities[item["passage_id"]]
         return evaluate.Prediction(
             has_error=probability >= threshold,
             paragraph_index=paragraph,
             confidence=probability,
+            paragraph_flags=[value >= threshold for value in per_paragraph],
             note=f"P(contradiction)={probability:.4f}",
         )
 

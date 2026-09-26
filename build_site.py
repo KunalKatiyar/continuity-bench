@@ -48,6 +48,7 @@ KINDS = {
     "attack": ("Free heuristic", "#eb6834", "#d95926"),
     "diagnostic": ("Integrity check", "#1baf7a", "#199e70"),
     "floor": ("Trivial floor", "#898781", "#898781"),
+    "human": ("Human reader", "#4a3aa7", "#9085e9"),
 }
 
 DIAGNOSTIC_NAMES = {"pair_leak", "pair_diff_targeted"}
@@ -165,6 +166,16 @@ def operating_points(rows):
         )
     parts.append("</svg>")
     return "".join(parts)
+
+
+def costed(rows):
+    """Rows whose cost per passage is a real number, so a cost axis can hold them.
+
+    A human reader has no per-passage API cost and would plot at $0.00, which would
+    make the most expensive predictor on the board its cheapest point. Their cost is
+    wall clock, reported separately.
+    """
+    return [row for row in rows if row["kind"] != "human"]
 
 
 def has_paid_run(rows):
@@ -326,6 +337,14 @@ def ci95(row):
     lo, hi = interval
     verdict = row.get("youden_j_verdict", "effect" if (lo > 0 or hi < 0) else "inconclusive")
     return f"{lo:+.3f} to {hi:+.3f}{VERDICT_MARK.get(verdict, '')}"
+
+
+def cost_cell(row):
+    """Per-passage cost, or seconds for a human, whose cost is time rather than money."""
+    if row["kind"] == "human":
+        seconds = row.get("median_seconds_per_passage")
+        return "&mdash;" if seconds is None else f"{seconds:.0f}s"
+    return f"${per_passage(row):.5f}"
 
 
 def auc_cell(row):
@@ -653,7 +672,7 @@ rate is measured on the same text distribution as the recall.</p>
 """
 
 
-CONTENDER_KINDS = ("model", "floor")
+CONTENDER_KINDS = ("model", "floor", "human")
 INTEGRITY_KINDS = ("attack", "diagnostic")
 
 
@@ -705,12 +724,12 @@ def render_public(rows, corpus_stats):
         '<div class="panel"><h3>Cost vs discrimination</h3>'
         '<p class="note">J = recall &minus; false-positive rate. Zero means the run '
         "separates nothing.</p>"
-        + scatter(contenders, "youden_j", "J = recall - FPR", 0.0, "no discrimination")
+        + scatter(costed(contenders), "youden_j", "J = recall - FPR", 0.0, "no discrimination")
         + "</div>"
         '<div class="panel"><h3>Cost vs F1</h3>'
         '<p class="note">Dashed line: flagging every passage. Points on or below it '
         "discriminate nothing, whatever their F1.</p>"
-        + scatter(contenders, "f1", "F1", FLOOR_F1, "flag-everything F1 = 0.667")
+        + scatter(costed(contenders), "f1", "F1", FLOOR_F1, "flag-everything F1 = 0.667")
         + "</div></div>"
         if has_paid_run(contenders)
         else '<div class="panels">'
