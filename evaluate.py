@@ -33,8 +33,6 @@ import bench
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CORPUS = ROOT / "corpus" / "continuity_v0.jsonl"
 RESULTS_DIR = ROOT / "results"
-# a run covering fewer pairs than this is filed separately rather than overwriting
-PARTIAL_RUN_PAIRS = 200
 
 
 @dataclass
@@ -103,6 +101,8 @@ class Scores:
     paragraph_tn: int = 0
     paragraph_fn: int = 0
     per_rule: dict = field(default_factory=lambda: defaultdict(lambda: [0, 0]))
+    # per rule: [false positives, clean items] over that rule's own matched controls
+    per_rule_clean: dict = field(default_factory=lambda: defaultdict(lambda: [0, 0]))
     per_novel: dict = field(default_factory=lambda: defaultdict(lambda: [0, 0]))
 
     @property
@@ -196,6 +196,31 @@ class Scores:
         fpr_lo, fpr_hi = self.fpr_interval
         return recall_lo - fpr_hi, recall_hi - fpr_lo
 
+    def by_rule(self):
+        """Per-rule J, each rule scored against its own matched controls.
+
+        The number that says whether a given error type is detectable at all, as
+        opposed to a corpus-wide figure dominated by whichever rule is most numerous.
+        """
+        out = {}
+        for rule, (hit, total) in sorted(self.per_rule.items()):
+            if not total:
+                continue
+            false_positive, clean = self.per_rule_clean.get(rule, (0, 0))
+            recall = hit / total
+            fpr = false_positive / clean if clean else 0.0
+            low, high = wilson_interval(hit, total)
+            fp_low, fp_high = wilson_interval(false_positive, clean) if clean else (0.0, 0.0)
+            out[rule] = {
+                "recall": round(recall, 4),
+                "fpr": round(fpr, 4),
+                "youden_j": round(recall - fpr, 4),
+                "youden_j_ci95": [round(low - fp_high, 4), round(high - fp_low, 4)],
+                "n_injected": total,
+                "n_clean": clean,
+            }
+        return out
+
     def summary(self):
         j_lo, j_hi = self.youden_j_interval
         return {
@@ -235,6 +260,7 @@ class Scores:
             "recall_by_rule": {
                 rule: round(hit / total, 4) for rule, (hit, total) in sorted(self.per_rule.items()) if total
             },
+            "by_rule": self.by_rule(),
             "recall_by_novel": {
                 novel: round(hit / total, 4) for novel, (hit, total) in sorted(self.per_novel.items()) if total
             },
@@ -263,6 +289,21 @@ def _count_paragraphs(scores, item, flags):
             scores.paragraph_tn += 1
 
 
+def rule_of_pair(items):
+    """Map each pair to the rule its injected half used, so controls inherit it.
+
+    A clean control has no rule of its own, but it is the control *for* a specific
+    rule. Without that link, per-rule recall can only be compared against a corpus-wide
+    false-positive rate that mixes every rule's controls together - which says nothing
+    about whether any single rule is detectable.
+    """
+    return {
+        item["pair_id"]: item["ground_truth"]["rule"]
+        for item in items
+        if item["ground_truth"]["has_error"]
+    }
+
+
 def score(items, predict):
     """Run a predictor over items and return Scores.
 
@@ -273,6 +314,7 @@ def score(items, predict):
     if hasattr(predict, "fit"):
         predict.fit(items)
     scores = Scores()
+    rule_by_pair = rule_of_pair(items)
     for item in items:
         started = time.perf_counter()
         prediction = predict(item)
@@ -298,8 +340,13 @@ def score(items, predict):
             else:
                 scores.false_negative += 1
         else:
+            rule = rule_by_pair.get(item["pair_id"])
+            if rule:
+                scores.per_rule_clean[rule][1] += 1
             if prediction.has_error:
                 scores.false_positive += 1
+                if rule:
+                    scores.per_rule_clean[rule][0] += 1
             else:
                 scores.true_negative += 1
     return scores
@@ -746,10 +793,23 @@ class VerdictPredictor:
         return bool(self.rates or MODEL_PRICING_USD_PER_MTOK.get(self.model))
 
     def build_prompt(self, item):
-        """Number the paragraphs so the model can point at one."""
+        """Number the paragraphs so the model can point at one.
+
+        An item whose anchor lives in the state ships that state, and every predictor
+        is given it. Withholding it would make those items unsolvable by construction
+        for a passage-level model and then score that as a model failure.
+        """
         numbered = "\n\n".join(
             f"[{index}] {para}" for index, para in enumerate(item["text"].split("\n\n"))
         )
+        facts = item.get("state_facts") or []
+        if facts:
+            established = "\n".join(f"- {fact}" for fact in facts)
+            return (
+                f"Established facts about this story:\n{established}\n\n"
+                f"Passage:\n\n{numbered}\n\n"
+                "Does this passage contradict itself or an established fact?"
+            )
         return f"Passage:\n\n{numbered}\n\nDoes this passage contradict itself?"
 
     def __call__(self, item):
@@ -926,9 +986,10 @@ class JevPredictor(VerdictPredictor):
 
         verifier = self.verifier()
         before = verifier.input_tokens
-        state = pipeline.StoryState(
-            established_facts=["(no separate state: the passage is checked against itself)"]
-        )
+        facts = item.get("state_facts") or [
+            "(no separate state: the passage is checked against itself)"
+        ]
+        state = pipeline.StoryState(established_facts=list(facts))
         try:
             contradicts, confidence = verifier.check(state, item["text"])
         except Exception as exc:
@@ -1020,8 +1081,10 @@ class JevHybridPredictor(VerdictPredictor):
         verifier = self.verifier()
         before_tokens = verifier.input_tokens
         try:
+            shipped = item.get("state_facts") or []
             result = pipeline.run_pipeline(
-                item["text"], verifier, self.extract, self.escalate
+                item["text"], verifier, self.extract, self.escalate,
+                state=pipeline.StoryState(established_facts=list(shipped)) if shipped else None,
             )
         except Exception as exc:
             fatal = classify_api_error(exc)
@@ -1282,6 +1345,17 @@ class OracleGatePredictor(VerdictPredictor):
         }
 
     def state_for(self, item):
+        """The state to check against: the item's own if it ships one, else derived.
+
+        An item built by a state-anchored rule carries the fact it contradicts, and
+        both halves of the pair carry the same one, so using it is not leakage. Only
+        passage-anchored items need the oracle derived from the clean twin.
+        """
+        import pipeline
+
+        facts = item.get("state_facts") or []
+        if facts:
+            return pipeline.StoryState(established_facts=list(facts))
         # plain lookup, not getattr with a default: silently falling back to the
         # injected text as its own "clean" twin is the one failure this must not hide
         return oracle_state(self._clean_text[item["pair_id"]])
@@ -1410,18 +1484,20 @@ def load_items(corpus, split=None, rule=None, limit=None):
     return items
 
 
-def write_results(name, corpus, items, scores, extra=None, kind="attack"):
+def write_results(name, corpus, items, scores, extra=None, kind="attack", partial=False):
     """Write one predictor's results to results/<name>.json and return the path.
 
-    A partial run gets a suffixed filename so it cannot overwrite a full-split result.
-    Without that, `run X --limit 60` silently replaces the 410-item row of the same
+    A limited run gets a suffixed filename so it cannot overwrite a full-split result.
+    Without that, `run X --limit 60` silently replaces the full row of the same
     predictor and the leaderboard reports the smaller run's wider interval as if it
-    were the full one.
+    were the full one. Keyed on whether --limit was passed rather than on a pair count,
+    because a threshold in pairs silently mislabels every run once the corpus shrinks
+    below it.
     """
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     pairs = len({item["pair_id"] for item in items})
     payload = {
-        "predictor": name if pairs >= PARTIAL_RUN_PAIRS else f"{name} ({pairs} pairs)",
+        "predictor": f"{name} ({pairs} pairs)" if partial else name,
         "kind": kind,
         "corpus": str(Path(corpus).name),
         "items": len(items),
@@ -1430,7 +1506,7 @@ def write_results(name, corpus, items, scores, extra=None, kind="attack"):
         **(extra or {}),
         **scores.summary(),
     }
-    suffix = "" if pairs >= PARTIAL_RUN_PAIRS else f"__{pairs}pairs"
+    suffix = f"__{pairs}pairs" if partial else ""
     path = RESULTS_DIR / f"{name}{suffix}.json"
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path, payload
@@ -1528,9 +1604,14 @@ def cmd_run(args):
         extra["parse_failures"] = failures
     if api_failures:
         extra["api_failures"] = api_failures
-    path, payload = write_results(name, args.corpus, items, scores, extra, predict.kind)
+    path, payload = write_results(name, args.corpus, items, scores, extra, predict.kind,
+                                  partial=bool(args.limit))
     print_row(name, payload)
-    print(f"by rule: {payload['recall_by_rule']}")
+    print("by rule (each against its own matched controls):")
+    for rule, stats in payload.get("by_rule", {}).items():
+        lo, hi = stats["youden_j_ci95"]
+        print(f"  {rule:20} J {stats['youden_j']:+.3f} [{lo:+.3f},{hi:+.3f}] "
+              f"recall {stats['recall']:.3f} FPR {stats['fpr']:.3f} n={stats['n_injected']}")
     if failures:
         print(f"WARNING {failures} response(s) failed to parse and were counted as 'no error'")
         for note in getattr(predict, "parse_failure_notes", [])[:3]:

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import random
 import statistics
 import textwrap
@@ -36,7 +37,10 @@ import time
 from pathlib import Path
 
 import bench
-import evaluate
+
+# evaluate is imported lazily, not here: it pulls in pydantic and the provider SDKs,
+# and the one script in this project a person runs by hand should start with a plain
+# `python3` in any directory. Only --score needs it.
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_ANSWERS = ROOT / "human_answers.json"
@@ -64,7 +68,8 @@ def save_answers(path, answers):
 
 def candidate_items(corpus, split, seed):
     """One half of each matched pair, shuffled, so neither twin reveals the other."""
-    items = bench.one_half_per_pair(evaluate.load_items(corpus, split=split), seed)
+    rows = [json.loads(line) for line in Path(corpus).open(encoding="utf-8")]
+    items = bench.one_half_per_pair([r for r in rows if r["split"] == split], seed)
     random.Random(seed).shuffle(items)
     return items
 
@@ -117,6 +122,8 @@ def ask(item, index, total):
 
 def score_answers(items, answers):
     """Score the answered subset through the shared harness, as any predictor is."""
+    import evaluate
+
     answered = answered_items(items, answers)
     if not answered:
         return None, None
@@ -162,7 +169,9 @@ def main(argv=None):
     parser.add_argument("--split", default="dev")
     parser.add_argument("--answers", default=str(DEFAULT_ANSWERS))
     parser.add_argument("--seed", default="human-baseline-v0")
-    parser.add_argument("-n", type=int, default=40, help="passages to answer this sitting")
+    # both spellings, because the docs said --n and argparse only offered -n
+    parser.add_argument("-n", "--n", "--count", dest="n", type=int, default=40,
+                        help="passages to answer this sitting")
     parser.add_argument("--score", action="store_true", help="score answers and stop")
     parser.add_argument("--review", action="store_true", help="show answers against truth")
     args = parser.parse_args(argv)
@@ -172,6 +181,19 @@ def main(argv=None):
 
     if args.review:
         return cmd_review(items, answers)
+
+    if not args.score and not sys.stdin.isatty():
+        # input() on a pipe hits EOF immediately and every passage would record as a
+        # skip, quietly producing an empty baseline that looks like a completed one
+        print(
+            "This needs a real terminal: stdin is not a TTY, so the prompts cannot be\n"
+            "answered and every passage would be skipped.\n\n"
+            "Open your own terminal window and run:\n"
+            f"    cd {ROOT}\n"
+            f"    python3 human_baseline.py --n {args.n}\n\n"
+            "--score and --review work fine from anywhere."
+        )
+        return 2
 
     if not args.score:
         todo = [i for i in items if i["passage_id"] not in answers][: args.n]
@@ -190,6 +212,8 @@ def main(argv=None):
     if scores is None:
         print("no scored answers yet")
         return 0
+    import evaluate
+
     median = statistics.median(answers[i["passage_id"]]["seconds"] for i in answered)
     # kind="human", not "model". A human published as a model would render at $0.00 on
     # a cost-vs-quality chart - making the most expensive predictor in existence the

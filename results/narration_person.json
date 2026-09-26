@@ -2,70 +2,121 @@
   "predictor": "narration_person",
   "kind": "attack",
   "corpus": "continuity_v0.jsonl",
-  "items": 544,
-  "pairs": 272,
-  "novels": 27,
+  "items": 294,
+  "pairs": 147,
+  "novels": 31,
   "precision": 0.5,
-  "recall": 0.4559,
-  "f1": 0.4769,
+  "recall": 0.4898,
+  "f1": 0.4948,
   "youden_j": 0.0,
   "youden_j_ci95": [
-    -0.1176,
-    0.1176
+    -0.1596,
+    0.1596
   ],
   "youden_j_significant": false,
   "youden_j_verdict": "inconclusive",
   "roc_auc": null,
   "recall_ci95": [
-    0.3977,
-    0.5153
+    0.4103,
+    0.5698
   ],
   "fpr_ci95": [
-    0.3977,
-    0.5153
+    0.4103,
+    0.5698
   ],
-  "false_positive_rate": 0.4559,
-  "localization": 0.1452,
-  "true_positive": 124,
-  "false_positive": 124,
-  "true_negative": 148,
-  "false_negative": 148,
+  "false_positive_rate": 0.4898,
+  "localization": 0.1111,
+  "true_positive": 72,
+  "false_positive": 72,
+  "true_negative": 75,
+  "false_negative": 75,
   "cost_usd": 0.0,
   "input_tokens": 0,
   "output_tokens": 0,
-  "median_latency_s": 0.0003,
+  "median_latency_s": 0.0002,
   "recall_by_rule": {
-    "character_swap": 0.4511,
+    "character_swap": 0.4318,
+    "state_trait_flip": 0.566,
     "timeline_weekday": 0.6667,
     "trait_flip": 0.6667
   },
+  "by_rule": {
+    "character_swap": {
+      "recall": 0.4318,
+      "fpr": 0.4318,
+      "youden_j": 0.0,
+      "youden_j_ci95": [
+        -0.2027,
+        0.2027
+      ],
+      "n_injected": 88,
+      "n_clean": 88
+    },
+    "state_trait_flip": {
+      "recall": 0.566,
+      "fpr": 0.566,
+      "youden_j": 0.0,
+      "youden_j_ci95": [
+        -0.2578,
+        0.2578
+      ],
+      "n_injected": 53,
+      "n_clean": 53
+    },
+    "timeline_weekday": {
+      "recall": 0.6667,
+      "fpr": 0.6667,
+      "youden_j": 0.0,
+      "youden_j_ci95": [
+        -0.7309,
+        0.7309
+      ],
+      "n_injected": 3,
+      "n_clean": 3
+    },
+    "trait_flip": {
+      "recall": 0.6667,
+      "fpr": 0.6667,
+      "youden_j": 0.0,
+      "youden_j_ci95": [
+        -0.7309,
+        0.7309
+      ],
+      "n_injected": 3,
+      "n_clean": 3
+    }
+  },
   "recall_by_novel": {
-    "pg1023": 0.6923,
+    "pg1023": 0.5,
     "pg1184": 0.0,
-    "pg120": 0.75,
+    "pg120": 0.0,
     "pg121": 0.0,
     "pg1260": 0.75,
     "pg1342": 0.0,
     "pg1399": 0.0,
-    "pg1400": 0.9231,
+    "pg1400": 0.8,
     "pg155": 1.0,
+    "pg158": 0.0,
     "pg1661": 0.5,
     "pg174": 0.0,
+    "pg219": 1.0,
     "pg2554": 0.0,
-    "pg2701": 0.9167,
-    "pg271": 0.8333,
+    "pg2701": 1.0,
+    "pg271": 1.0,
     "pg2814": 0.0,
-    "pg2852": 0.5,
+    "pg2852": 0.75,
     "pg345": 1.0,
+    "pg35": 0.0,
     "pg36": 1.0,
     "pg43": 1.0,
     "pg514": 0.0,
-    "pg730": 0.1667,
-    "pg74": 0.0833,
-    "pg76": 0.75,
-    "pg766": 0.9231,
+    "pg583": 0.5,
+    "pg730": 0.0,
+    "pg74": 0.1667,
+    "pg76": 0.8,
+    "pg766": 0.8571,
     "pg768": 1.0,
-    "pg84": 0.8333,
-    "pg98": 0.0833
+    "pg84": 0.6667,
+    "pg98": 0.0
   }
 }

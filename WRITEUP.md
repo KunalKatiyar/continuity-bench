@@ -161,6 +161,47 @@ hypothesis with a mechanism and two converging methods, not a result. Making tho
 rules 40% of the corpus instead of 2% is the experiment that would settle it, and it is
 what the injector work is for.
 
+## Fixing the corpus, and the first real separation
+
+The diagnosis said the corpus asks a question its dominant error type cannot answer. The
+fix turned out not to need an LLM at all.
+
+`trait_flip` needed the same trait stated *twice* in one passage — which real prose
+almost never does, hence 3 items across 35 novels. But it needed that only because the
+corpus insisted each passage be self-contained. The architecture under test checks a
+paragraph against a **state**. Put the anchor in the state and one mention is enough:
+flip it, and ship the original value as an established fact. Both halves of the pair
+carry the same state, so it cannot leak the answer, and a passage-level reader genuinely
+cannot solve it — which the item declares rather than hides.
+
+That took the corpus from **98% / 2%** to **60% / 36%**, with two rules clearing n≥30
+instead of n=3.
+
+Then Laya, scored per rule against each rule's own matched controls:
+
+| rule | J | recall | FPR | n |
+|---|---|---|---|---|
+| `state_trait_flip` | **+0.132** | 0.421 | 0.289 | 38 |
+| `character_swap` | −0.047 | 0.125 | 0.172 | 64 |
+
+First time two error types have separated on this benchmark, and in the direction the
+NLI experiment and the oracle experiment both predicted independently. Still
+inconclusive on its own — that interval is [−0.169, +0.408] — but it is no longer the
+same flat zero everywhere.
+
+Seeing it required adding per-rule J. Per-rule *recall* against a corpus-wide
+false-positive rate was hiding it, because that FPR pooled both rules' controls.
+
+Two things the rebalance also did. The strongest blind attack fell from J +0.066 to
++0.020, because the name-statistics heuristic was living off `character_swap` being 98%
+of the corpus. And a regression guard caught 16 items where the original trait phrase
+survived elsewhere in the passage — those self-contradicted, so they were solvable
+without the state they claimed to depend on, and the rule now requires the phrase to be
+unique.
+
+The cost is a smaller corpus: 147 pairs, down from 242. Validity over volume, but it is
+thin, and I would want more trait families before quoting a headline from it.
+
 ## What I don't know yet
 
 Whether a careful human can solve these items at all.

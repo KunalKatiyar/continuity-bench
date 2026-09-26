@@ -2,70 +2,121 @@
   "predictor": "pair_diff_targeted",
   "kind": "diagnostic",
   "corpus": "continuity_v0.jsonl",
-  "items": 544,
-  "pairs": 272,
-  "novels": 27,
+  "items": 294,
+  "pairs": 147,
+  "novels": 31,
   "precision": 1.0,
-  "recall": 0.6985,
-  "f1": 0.8225,
-  "youden_j": 0.6985,
+  "recall": 0.4082,
+  "f1": 0.5797,
+  "youden_j": 0.4082,
   "youden_j_ci95": [
-    0.6276,
-    0.75
+    0.3066,
+    0.489
   ],
   "youden_j_significant": true,
   "youden_j_verdict": "effect",
   "roc_auc": null,
   "recall_ci95": [
-    0.6415,
-    0.75
+    0.332,
+    0.489
   ],
   "fpr_ci95": [
     0.0,
-    0.0139
+    0.0255
   ],
   "false_positive_rate": 0.0,
   "localization": 1.0,
-  "true_positive": 190,
+  "true_positive": 60,
   "false_positive": 0,
-  "true_negative": 272,
-  "false_negative": 82,
+  "true_negative": 147,
+  "false_negative": 87,
   "cost_usd": 0.0,
   "input_tokens": 0,
   "output_tokens": 0,
-  "median_latency_s": 0.0014,
+  "median_latency_s": 0.0007,
   "recall_by_rule": {
-    "character_swap": 0.7143,
+    "character_swap": 0.6818,
+    "state_trait_flip": 0.0,
     "timeline_weekday": 0.0,
     "trait_flip": 0.0
   },
+  "by_rule": {
+    "character_swap": {
+      "recall": 0.6818,
+      "fpr": 0.0,
+      "youden_j": 0.6818,
+      "youden_j_ci95": [
+        0.5368,
+        0.7698
+      ],
+      "n_injected": 88,
+      "n_clean": 88
+    },
+    "state_trait_flip": {
+      "recall": 0.0,
+      "fpr": 0.0,
+      "youden_j": 0.0,
+      "youden_j_ci95": [
+        -0.0676,
+        0.0676
+      ],
+      "n_injected": 53,
+      "n_clean": 53
+    },
+    "timeline_weekday": {
+      "recall": 0.0,
+      "fpr": 0.0,
+      "youden_j": 0.0,
+      "youden_j_ci95": [
+        -0.5615,
+        0.5615
+      ],
+      "n_injected": 3,
+      "n_clean": 3
+    },
+    "trait_flip": {
+      "recall": 0.0,
+      "fpr": 0.0,
+      "youden_j": 0.0,
+      "youden_j_ci95": [
+        -0.5615,
+        0.5615
+      ],
+      "n_injected": 3,
+      "n_clean": 3
+    }
+  },
   "recall_by_novel": {
-    "pg1023": 0.8462,
-    "pg1184": 0.75,
+    "pg1023": 0.4,
+    "pg1184": 0.5714,
     "pg120": 1.0,
-    "pg121": 0.9167,
-    "pg1260": 0.75,
-    "pg1342": 0.6667,
-    "pg1399": 0.5833,
-    "pg1400": 0.1538,
+    "pg121": 0.6667,
+    "pg1260": 0.375,
+    "pg1342": 1.0,
+    "pg1399": 0.25,
+    "pg1400": 0.1,
     "pg155": 0.0,
-    "pg1661": 0.8333,
-    "pg174": 0.8889,
-    "pg2554": 0.3333,
-    "pg2701": 0.75,
-    "pg271": 0.75,
+    "pg158": 0.0,
+    "pg1661": 0.5,
+    "pg174": 0.75,
+    "pg219": 0.0,
+    "pg2554": 0.1667,
+    "pg2701": 1.0,
+    "pg271": 0.5,
     "pg2814": 0.5,
-    "pg2852": 0.8333,
-    "pg345": 0.9167,
+    "pg2852": 0.5,
+    "pg345": 0.8,
+    "pg35": 0.0,
     "pg36": 0.0,
     "pg43": 0.5,
-    "pg514": 0.6667,
-    "pg730": 1.0,
-    "pg74": 0.6667,
-    "pg76": 0.5833,
-    "pg766": 0.8462,
+    "pg514": 0.5,
+    "pg583": 0.0,
+    "pg730": 0.8,
+    "pg74": 0.3333,
+    "pg76": 0.2,
+    "pg766": 0.4286,
     "pg768": 0.0,
-    "pg84": 0.5833,
-    "pg98": 0.4167
+    "pg84": 0.3333,
+    "pg98": 0.3333
   }
 }

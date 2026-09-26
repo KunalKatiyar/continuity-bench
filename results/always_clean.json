@@ -2,42 +2,89 @@
   "predictor": "always_clean",
   "kind": "floor",
   "corpus": "continuity_v0.jsonl",
-  "items": 544,
-  "pairs": 272,
-  "novels": 27,
+  "items": 294,
+  "pairs": 147,
+  "novels": 31,
   "precision": 0.0,
   "recall": 0.0,
   "f1": 0.0,
   "youden_j": 0.0,
   "youden_j_ci95": [
-    -0.0139,
-    0.0139
+    -0.0255,
+    0.0255
   ],
   "youden_j_significant": false,
   "youden_j_verdict": "no_effect",
   "roc_auc": null,
   "recall_ci95": [
     0.0,
-    0.0139
+    0.0255
   ],
   "fpr_ci95": [
     0.0,
-    0.0139
+    0.0255
   ],
   "false_positive_rate": 0.0,
   "localization": 0.0,
   "true_positive": 0,
   "false_positive": 0,
-  "true_negative": 272,
-  "false_negative": 272,
+  "true_negative": 147,
+  "false_negative": 147,
   "cost_usd": 0.0,
   "input_tokens": 0,
   "output_tokens": 0,
   "median_latency_s": 0.0,
   "recall_by_rule": {
     "character_swap": 0.0,
+    "state_trait_flip": 0.0,
     "timeline_weekday": 0.0,
     "trait_flip": 0.0
+  },
+  "by_rule": {
+    "character_swap": {
+      "recall": 0.0,
+      "fpr": 0.0,
+      "youden_j": 0.0,
+      "youden_j_ci95": [
+        -0.0418,
+        0.0418
+      ],
+      "n_injected": 88,
+      "n_clean": 88
+    },
+    "state_trait_flip": {
+      "recall": 0.0,
+      "fpr": 0.0,
+      "youden_j": 0.0,
+      "youden_j_ci95": [
+        -0.0676,
+        0.0676
+      ],
+      "n_injected": 53,
+      "n_clean": 53
+    },
+    "timeline_weekday": {
+      "recall": 0.0,
+      "fpr": 0.0,
+      "youden_j": 0.0,
+      "youden_j_ci95": [
+        -0.5615,
+        0.5615
+      ],
+      "n_injected": 3,
+      "n_clean": 3
+    },
+    "trait_flip": {
+      "recall": 0.0,
+      "fpr": 0.0,
+      "youden_j": 0.0,
+      "youden_j_ci95": [
+        -0.5615,
+        0.5615
+      ],
+      "n_injected": 3,
+      "n_clean": 3
+    }
   },
   "recall_by_novel": {
     "pg1023": 0.0,
@@ -49,17 +96,21 @@
     "pg1399": 0.0,
     "pg1400": 0.0,
     "pg155": 0.0,
+    "pg158": 0.0,
     "pg1661": 0.0,
     "pg174": 0.0,
+    "pg219": 0.0,
     "pg2554": 0.0,
     "pg2701": 0.0,
     "pg271": 0.0,
     "pg2814": 0.0,
     "pg2852": 0.0,
     "pg345": 0.0,
+    "pg35": 0.0,
     "pg36": 0.0,
     "pg43": 0.0,
     "pg514": 0.0,
+    "pg583": 0.0,
     "pg730": 0.0,
     "pg74": 0.0,
     "pg76": 0.0,

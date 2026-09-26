@@ -164,6 +164,9 @@ class Hit:
     description: str
     anchor: int = 0
     long_range_ok: bool = False
+    # facts the item ships with, for errors whose anchor is in the state rather than
+    # in the passage. Empty for rules that are self-contained.
+    state_facts: tuple = ()
 
 
 def read_books():
@@ -319,6 +322,56 @@ def same_colour(a, b):
     return norm.get(a, a) == norm.get(b, b)
 
 
+def candidates_state_trait_flip(text, rng):
+    """Flip a stated trait whose anchor lives in the story state, not in the passage.
+
+    candidates_trait_flip needs the same trait stated twice inside one passage, which
+    real prose almost never does - it yielded 3 items across 35 novels. But the
+    architecture under test checks a paragraph against a *state*, so the anchor does
+    not have to be in the passage at all. One mention is enough: flip it, and record
+    the original value as an established fact the item ships with.
+
+    That is not a weaker item. It is the error this project exists to catch - a fact
+    established in chapter two contradicted in chapter nine - and it is the shape the
+    evidence says cheap gates can actually detect, where character_swap is presupposition
+    failure that nothing tested can detect at all.
+
+    A passage-level reader cannot solve these by construction, which the item declares
+    through context_scope "state" rather than leaving for a reader to discover.
+    """
+    for noun, pattern in TRAIT_PATTERNS:
+        matches = list(pattern.finditer(text))
+        seen = Counter(
+            (m.group("owner").lower(), noun, m.group("value").lower()) for m in matches
+        )
+        for m in matches:
+            value = m.group("value").lower()
+            # a phrase stated twice in one passage belongs to trait_flip: flipping one
+            # copy leaves the other, the passage self-contradicts, and the item is
+            # solvable without the state it claims to depend on
+            if seen[(m.group("owner").lower(), noun, value)] > 1:
+                continue
+            alternatives = sorted(v for v in TRAIT_VALUES[noun] if not same_colour(v, value))
+            if not alternatives:
+                continue
+            replacement = rng.choice(alternatives)
+            if m.group("value")[0].isupper():
+                replacement = replacement.capitalize()
+            owner = m.group("owner").strip()
+            yield Hit(
+                "state_trait_flip",
+                "fact_contradiction",
+                m.start("value"),
+                m.end("value"),
+                m.group("value"),
+                replacement,
+                f"the established state records {owner} {noun} as {value}",
+                anchor=m.start("value"),
+                long_range_ok=True,
+                state_facts=(f"{owner} {noun} is {value}",),
+            )
+
+
 def candidates_trait_flip(text, rng):
     """Flip the later of two matching trait phrases with the same owner token.
 
@@ -386,7 +439,7 @@ def outside_quotes(spans, position):
 # in a linter, not in a benchmark meant to measure state tracking. The spec lists it
 # as one of three candidate error types; this is the evidence for dropping it.
 
-GLOBAL_RULES = (candidates_timeline, candidates_trait_flip)
+GLOBAL_RULES = (candidates_timeline, candidates_trait_flip, candidates_state_trait_flip)
 
 
 def person_names(text):
@@ -595,7 +648,10 @@ def item_pair(novel_id, passage_id, split, text, hit, n_paragraphs, scope="passa
         "pair_id": passage_id,
         "split": split,
         "n_paragraphs": n_paragraphs,
-        "context_scope": scope,
+        "context_scope": "state" if hit.state_facts else scope,
+        # both halves carry the same state, so the only difference between them is the
+        # text - otherwise the state itself would give the answer away
+        "state_facts": list(hit.state_facts),
     }
     err = {
         **base,
@@ -737,28 +793,83 @@ def cmd_fetch(args):
     return 0
 
 
+def balance_rules(pairs_by_rule, max_share, seed):
+    """Drop pairs from over-represented rules until no rule exceeds max_share.
+
+    A corpus that is 98% one error type cannot measure anything else: the rules with
+    n=3 have no statistical power, and a headline number is really that one rule's
+    number wearing a corpus's name. character_swap scales with the per-novel cap while
+    the others are limited by what prose actually contains, so balance has to come from
+    downsampling the abundant rule rather than from finding more of the scarce ones.
+
+    Deterministic given the seed, and it drops whole pairs so an injected item never
+    loses its matched control.
+    """
+    counts = {rule: len(pairs) for rule, pairs in pairs_by_rule.items()}
+    for _ in range(len(counts)):
+        total = sum(counts.values())
+        over = [
+            rule for rule, count in counts.items()
+            if total and count > max_share * total and count > 1
+        ]
+        if not over:
+            break
+        for rule in over:
+            others = total - counts[rule]
+            # largest n with n <= max_share * (n + others)
+            allowed = int(max_share * others / (1 - max_share)) if max_share < 1 else counts[rule]
+            counts[rule] = max(1, min(counts[rule], allowed))
+    kept = {}
+    for rule, pairs in pairs_by_rule.items():
+        chosen = sorted(pairs)
+        if len(chosen) > counts[rule]:
+            random.Random(f"{seed}:balance:{rule}").shuffle(chosen)
+            chosen = chosen[: counts[rule]]
+        kept[rule] = set(chosen)
+    return kept
+
+
 def cmd_build(args):
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    rules_seen, novels_used, items = Counter(), 0, 0
+    rules_seen, novels_used = Counter(), 0
+    # build everything first, then balance, then write: a rule's share can only be
+    # known once every novel has been visited
+    records, pairs_by_rule = [], defaultdict(list)
+    for path in sorted(RAW_DIR.glob("pg*.txt")):
+        novel_id = path.stem
+        paras = paragraphs(strip_boilerplate(path.read_text(encoding="utf-8", errors="replace")))
+        if len(paras) < args.window * 3:
+            print(f"skip {novel_id}: only {len(paras)} usable paragraphs", file=sys.stderr)
+            continue
+        split = split_for(novel_id)
+        local = Counter()
+        for record in novel_items(novel_id, paras, split, args):
+            records.append(record)
+            if record["ground_truth"]["has_error"]:
+                local[record["ground_truth"]["rule"]] += 1
+                pairs_by_rule[record["ground_truth"]["rule"]].append(record["pair_id"])
+        if local:
+            novels_used += 1
+            rules_seen.update(local)
+            print(f"{novel_id} [{split}]: {dict(local.most_common())}")
+
+    keep = balance_rules(pairs_by_rule, args.max_rule_share, args.seed)
+    keep_ids = set().union(*keep.values()) if keep else set()
+    dropped = Counter()
+    for rule, pairs in pairs_by_rule.items():
+        dropped[rule] = len(pairs) - len(keep.get(rule, ()))
+    items = 0
     with out_path.open("w", encoding="utf-8") as fh:
-        for path in sorted(RAW_DIR.glob("pg*.txt")):
-            novel_id = path.stem
-            paras = paragraphs(strip_boilerplate(path.read_text(encoding="utf-8", errors="replace")))
-            if len(paras) < args.window * 3:
-                print(f"skip {novel_id}: only {len(paras)} usable paragraphs", file=sys.stderr)
+        for record in records:
+            if record["pair_id"] not in keep_ids:
                 continue
-            split = split_for(novel_id)
-            local = Counter()
-            for record in novel_items(novel_id, paras, split, args):
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-                items += 1
-                if record["ground_truth"]["has_error"]:
-                    local[record["ground_truth"]["rule"]] += 1
-            if local:
-                novels_used += 1
-                rules_seen.update(local)
-                print(f"{novel_id} [{split}]: {dict(local.most_common())}")
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            items += 1
+    rules_seen = Counter({rule: len(ids) for rule, ids in keep.items()})
+    if any(dropped.values()):
+        print(f"\nbalanced to max {args.max_rule_share:.0%} per rule, dropped: "
+              f"{dict((r, n) for r, n in dropped.most_common() if n)}")
     print(f"\nwrote {items} items ({items // 2} matched pairs) from {novels_used} novels to {out_path}")
     for rule, count in rules_seen.most_common():
         print(f"  {rule}: {count}")
@@ -984,6 +1095,8 @@ def main(argv=None):
     build.add_argument("--window", type=int, default=12, help="maximum paragraphs per passage")
     build.add_argument("--cap-per-rule", type=int, default=12, help="injected passages per rule per novel")
     build.add_argument("--max-chars", type=int, default=400000, help="skip candidates whose span exceeds this")
+    build.add_argument("--max-rule-share", type=float, default=0.6,
+                       help="no error type may exceed this share of injected items")
     build.add_argument("--seed", default="continuity-bench-v0")
     build.set_defaults(func=cmd_build)
 
