@@ -322,6 +322,20 @@ def same_colour(a, b):
     return norm.get(a, a) == norm.get(b, b)
 
 
+def flipped_value(noun, value, rng, upper):
+    """A different colour for this trait, or None when the set offers none.
+
+    Shared because this is the part that drifts silently: a same_colour normalisation
+    or a capitalisation rule fixed in one generator and not the other yields a
+    mislabelled item rather than a crash.
+    """
+    alternatives = sorted(v for v in TRAIT_VALUES[noun] if not same_colour(v, value))
+    if not alternatives:
+        return None
+    replacement = rng.choice(alternatives)
+    return replacement.capitalize() if upper else replacement
+
+
 def candidates_state_trait_flip(text, rng):
     """Flip a stated trait whose anchor lives in the story state, not in the passage.
 
@@ -351,12 +365,9 @@ def candidates_state_trait_flip(text, rng):
             # solvable without the state it claims to depend on
             if seen[(m.group("owner").lower(), noun, value)] > 1:
                 continue
-            alternatives = sorted(v for v in TRAIT_VALUES[noun] if not same_colour(v, value))
-            if not alternatives:
+            replacement = flipped_value(noun, value, rng, m.group("value")[0].isupper())
+            if replacement is None:
                 continue
-            replacement = rng.choice(alternatives)
-            if m.group("value")[0].isupper():
-                replacement = replacement.capitalize()
             owner = m.group("owner").strip()
             yield Hit(
                 "state_trait_flip",
@@ -368,7 +379,7 @@ def candidates_state_trait_flip(text, rng):
                 f"the established state records {owner} {noun} as {value}",
                 anchor=m.start("value"),
                 long_range_ok=True,
-                state_facts=(f"{owner} {noun} is {value}",),
+                state_facts=(trait_fact(owner, noun, value),),
             )
 
 
@@ -396,11 +407,10 @@ def candidates_trait_flip(text, rng):
         occurrences = sorted(groups[key], key=lambda m: m.start())
         if len(occurrences) < 2:
             continue
-        alternatives = sorted(v for v in TRAIT_VALUES[noun] if not same_colour(v, value))
         for anchor, m in zip(occurrences, occurrences[1:]):
-            replacement = rng.choice(alternatives)
-            if m.group("value")[0].isupper():
-                replacement = replacement.capitalize()
+            replacement = flipped_value(noun, value, rng, m.group("value")[0].isupper())
+            if replacement is None:
+                continue
             yield Hit(
                 "trait_flip",
                 "fact_contradiction",
@@ -793,32 +803,56 @@ def cmd_fetch(args):
     return 0
 
 
-def balance_rules(pairs_by_rule, max_share, seed):
-    """Drop pairs from over-represented rules until no rule exceeds max_share.
+DEFAULT_MAX_RULE_SHARE = 0.6
 
-    A corpus that is 98% one error type cannot measure anything else: the rules with
-    n=3 have no statistical power, and a headline number is really that one rule's
-    number wearing a corpus's name. character_swap scales with the per-novel cap while
-    the others are limited by what prose actually contains, so balance has to come from
-    downsampling the abundant rule rather than from finding more of the scarce ones.
+
+def trait_fact(owner, noun, value):
+    """The state's record of a trait. Paired with parse_trait_fact so the guards that
+    read it back bind to this format rather than re-deriving it from the prose."""
+    return f"{owner} {noun} is {value}"
+
+
+def parse_trait_fact(fact):
+    """(owner, noun, value) from a trait_fact string."""
+    owner, _, rest = fact.partition(" ")
+    noun, _, value = rest.partition(" is ")
+    return owner, noun, value
+
+
+def share_in_range(text):
+    """Reject an unservable cap at parse time, not after a full build."""
+    share = float(text)
+    if not 0.5 <= share < 1:
+        raise argparse.ArgumentTypeError(f"must be in [0.5, 1), got {share}")
+    return share
+
+
+def balance_rules(pairs_by_rule, max_share, seed):
+    """Drop pairs from the most numerous rule until it is within max_share.
+
+    A corpus that is 98% one error type cannot measure anything else: the other rules
+    have no statistical power and the headline number is really that one rule's number
+    wearing a corpus's name. character_swap scales with the per-novel cap while the
+    others are limited by what prose contains, so balance comes from downsampling the
+    abundant rule rather than finding more of the scarce ones.
+
+    One pass is enough because max_share is at least 0.5: only one rule can exceed half,
+    and after capping it to exactly max_share of the new total the remainder sums to
+    1 - max_share, which is no greater than max_share. An iterative version would be
+    needed below 0.5, which is why that is rejected rather than half-supported.
 
     Deterministic given the seed, and it drops whole pairs so an injected item never
     loses its matched control.
     """
+    if not 0.5 <= max_share < 1:
+        raise ValueError(f"max_rule_share must be in [0.5, 1), got {max_share}")
     counts = {rule: len(pairs) for rule, pairs in pairs_by_rule.items()}
-    for _ in range(len(counts)):
-        total = sum(counts.values())
-        over = [
-            rule for rule, count in counts.items()
-            if total and count > max_share * total and count > 1
-        ]
-        if not over:
-            break
-        for rule in over:
-            others = total - counts[rule]
-            # largest n with n <= max_share * (n + others)
-            allowed = int(max_share * others / (1 - max_share)) if max_share < 1 else counts[rule]
-            counts[rule] = max(1, min(counts[rule], allowed))
+    total = sum(counts.values())
+    if total:
+        biggest = max(counts, key=lambda rule: (counts[rule], rule))
+        if counts[biggest] > max_share * total:
+            others = total - counts[biggest]
+            counts[biggest] = max(1, int(max_share * others / (1 - max_share)))
     kept = {}
     for rule, pairs in pairs_by_rule.items():
         chosen = sorted(pairs)
@@ -832,7 +866,7 @@ def balance_rules(pairs_by_rule, max_share, seed):
 def cmd_build(args):
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    rules_seen, novels_used = Counter(), 0
+    novels_used = 0
     # build everything first, then balance, then write: a rule's share can only be
     # known once every novel has been visited
     records, pairs_by_rule = [], defaultdict(list)
@@ -851,14 +885,15 @@ def cmd_build(args):
                 pairs_by_rule[record["ground_truth"]["rule"]].append(record["pair_id"])
         if local:
             novels_used += 1
-            rules_seen.update(local)
             print(f"{novel_id} [{split}]: {dict(local.most_common())}")
 
     keep = balance_rules(pairs_by_rule, args.max_rule_share, args.seed)
-    keep_ids = set().union(*keep.values()) if keep else set()
-    dropped = Counter()
-    for rule, pairs in pairs_by_rule.items():
-        dropped[rule] = len(pairs) - len(keep.get(rule, ()))
+    keep_ids = set().union(*keep.values())
+    dropped = {
+        rule: len(pairs) - len(keep[rule])
+        for rule, pairs in pairs_by_rule.items()
+        if len(pairs) > len(keep[rule])
+    }
     items = 0
     with out_path.open("w", encoding="utf-8") as fh:
         for record in records:
@@ -867,9 +902,8 @@ def cmd_build(args):
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
             items += 1
     rules_seen = Counter({rule: len(ids) for rule, ids in keep.items()})
-    if any(dropped.values()):
-        print(f"\nbalanced to max {args.max_rule_share:.0%} per rule, dropped: "
-              f"{dict((r, n) for r, n in dropped.most_common() if n)}")
+    if dropped:
+        print(f"\nbalanced to max {args.max_rule_share:.0%} per rule, dropped: {dropped}")
     print(f"\nwrote {items} items ({items // 2} matched pairs) from {novels_used} novels to {out_path}")
     for rule, count in rules_seen.most_common():
         print(f"  {rule}: {count}")
@@ -1095,7 +1129,7 @@ def main(argv=None):
     build.add_argument("--window", type=int, default=12, help="maximum paragraphs per passage")
     build.add_argument("--cap-per-rule", type=int, default=12, help="injected passages per rule per novel")
     build.add_argument("--max-chars", type=int, default=400000, help="skip candidates whose span exceeds this")
-    build.add_argument("--max-rule-share", type=float, default=0.6,
+    build.add_argument("--max-rule-share", type=share_in_range, default=DEFAULT_MAX_RULE_SHARE,
                        help="no error type may exceed this share of injected items")
     build.add_argument("--seed", default="continuity-bench-v0")
     build.set_defaults(func=cmd_build)

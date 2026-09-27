@@ -125,7 +125,7 @@ Two entries reach the leaderboard: `jev`, the naive Jev-only pass the brief asks
 reported honestly, and `jev_hybrid`, the actual proposal.
 
 ```bash
-.venv/bin/python evaluate.py run jev        --split dev --yes   # ~$0.03 for 410 items
+.venv/bin/python evaluate.py run jev        --split dev --yes   # ~$0.02 for 212 items
 .venv/bin/python evaluate.py run jev_hybrid --split dev --yes
 ```
 
@@ -182,9 +182,12 @@ Not a truncation artifact.
 The uncomfortable conclusion is that **the corpus cannot currently tell "models are bad
 at continuity" apart from "we asked the wrong question about the wrong error type".**
 98% of it is an error type that does not match the question every predictor is asked,
-and the 2% that does match has n=6. That reframes every J ≈ 0 on the board, and it is
-the strongest argument yet for the LLM injector: regex can only mass-produce the one
-error type that fits the question worst.
+and the 2% that does match has n=6. That reframes every J ≈ 0 on the board.
+
+That finding is what `state_trait_flip` was built to answer, and the rebalanced corpus
+does separate the two: `state_trait_flip` J +0.132 against `character_swap` J −0.047 for
+the same predictor on the same run. The numbers in the sections above were measured on
+the 98% corpus (410 dev items) and are left as they were measured.
 
 ## An open-weights System One gate
 
@@ -204,7 +207,7 @@ chapter, you must hand it a compact extracted state.
 | `laya_typed-decisions` | +0.000 | ±0.045 | 0.024 | 0.024 | ~2m |
 
 Both measured nulls, which is the predicted result for a naive pass over a raw passage.
-The number worth keeping is the wall clock: 410 items in 2m15s against `llama3.1:8b`'s
+The number worth keeping is the wall clock: 410 items of the old corpus in 2m15s against `llama3.1:8b`'s
 44 minutes, ~20x. That is the first vendor latency claim in this project that survived
 an independent check.
 
@@ -257,7 +260,7 @@ rate. Their cost axis is seconds per passage.
 
 ## The corpus
 
-272 matched pairs, 544 items, 27 novels. Deterministic given `--seed`: same inputs,
+147 matched pairs, 294 items, 31 novels. Deterministic given `--seed`: same inputs,
 byte-identical output, which held across Python 3.12 and 3.13.
 
 ```bash
@@ -270,12 +273,16 @@ python3 bench.py export     # release files, test labels held back
 
 | rule | error type | items | what it does |
 |---|---|---|---|
-| `character_swap` | fact_contradiction | 266 | drops a character who is absent from the scene into it, replacing one who is present |
-| `trait_flip` | fact_contradiction | 3 | flips the later of two matching eye/hair colour phrases with the same owner |
-| `timeline_weekday` | timeline | 3 | breaks a day sequence the passage states itself |
+| rule | error type | items | scope | what it does |
+|---|---|---|---|---|
+| `character_swap` | fact_contradiction | 88 | passage | drops a character who is absent from the scene into it, replacing one who is present |
+| `state_trait_flip` | fact_contradiction | 53 | state | flips a trait whose only statement of record is the shipped `state_facts`, so one mention in the passage is enough |
+| `trait_flip` | fact_contradiction | 3 | passage | flips the later of two matching eye/hair colour phrases with the same owner |
+| `timeline_weekday` | timeline | 3 | passage | breaks a day sequence the passage states itself |
 
-Yes, that is 98% one error type, and no, it isn't for want of trying. Across all 35
-downloaded novels, roughly 70,000 paragraphs:
+That is 60% / 36% across the two rules with any statistical power, and getting there took
+a change of question. The first build was 98% `character_swap`, and not for want of
+trying. Across all 35 downloaded novels, roughly 70,000 paragraphs:
 
 | pattern | occurrences | per novel |
 |---|---|---|
@@ -286,10 +293,15 @@ downloaded novels, roughly 70,000 paragraphs:
 | month + season co-occurrence | 25 | 0.7 (mostly the modal "may", not May) |
 | `Name's <kinship>` | 1 | 0.0 |
 
-Regex injection over real prose supports one high-volume error type and a long tail. The
-facts a regex can verify simply aren't repeated often enough in actual novels. Balanced
-volume needs an LLM that writes the contradiction instead of pattern-matching one, which
-is the next step.
+Regex injection over real prose supports one high-volume error type and a long tail,
+because the facts a regex can verify simply aren't repeated often enough in actual
+novels. `state_trait_flip` sidesteps that by moving the anchor out of the prose: the
+trait's statement of record lives in the `state_facts` shipped with the item, so a single
+mention in the passage is checkable. That needs no repetition, which is why it yields 53
+items where the in-passage version yields 3. It also makes the item a genuine state
+question rather than a reading-comprehension one, which is the thing the gate models are
+built for. Wider coverage still needs an LLM that writes the contradiction instead of
+pattern-matching one.
 
 ### Why there's no POV-slip error type
 
@@ -329,7 +341,8 @@ implement only the API call.
 Keys resolve from `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`, then `~/.openai-key` /
 `~/.anthropic-key`, so nothing has to be pasted into a terminal.
 
-Cost of a full dev pass (410 items, ~607k input tokens): Jev $0.03, `gpt-4o-mini` $0.11,
+Cost of a full dev pass over the 98% corpus (410 items, ~607k input tokens; the rebalanced
+dev split is 212 items, so roughly half of each figure): Jev $0.03, `gpt-4o-mini` $0.11,
 `gpt-4.1` $1.48, `claude-haiku-4-5` $1.63, `claude-sonnet-5` $3.26, `claude-opus-5` $8.16.
 Local models are free but not fast: `llama3.1:8b` runs 6.4 s/item on an RTX 1000.
 

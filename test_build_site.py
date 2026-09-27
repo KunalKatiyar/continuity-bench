@@ -24,7 +24,6 @@ def _row(name, j=0.5, f1=0.6, cost=0.0, kind=None, **over):
         "input_tokens": 0,
         "output_tokens": 0,
         "median_latency_s": 0.0,
-        "recall_by_rule": {},
         "recall_by_novel": {},
     }
     row.update(over)

@@ -201,21 +201,26 @@ class Scores:
 
         The number that says whether a given error type is detectable at all, as
         opposed to a corpus-wide figure dominated by whichever rule is most numerous.
+
+        Scored through a nested Scores so the interval convention lives in one place.
         """
         out = {}
         for rule, (hit, total) in sorted(self.per_rule.items()):
             if not total:
                 continue
             false_positive, clean = self.per_rule_clean.get(rule, (0, 0))
-            recall = hit / total
-            fpr = false_positive / clean if clean else 0.0
-            low, high = wilson_interval(hit, total)
-            fp_low, fp_high = wilson_interval(false_positive, clean) if clean else (0.0, 0.0)
+            rule_scores = Scores(
+                true_positive=hit,
+                false_negative=total - hit,
+                false_positive=false_positive,
+                true_negative=clean - false_positive,
+            )
+            low, high = rule_scores.youden_j_interval
             out[rule] = {
-                "recall": round(recall, 4),
-                "fpr": round(fpr, 4),
-                "youden_j": round(recall - fpr, 4),
-                "youden_j_ci95": [round(low - fp_high, 4), round(high - fp_low, 4)],
+                "recall": round(rule_scores.recall, 4),
+                "fpr": round(rule_scores.false_positive_rate, 4),
+                "youden_j": round(rule_scores.youden_j, 4),
+                "youden_j_ci95": [round(low, 4), round(high, 4)],
                 "n_injected": total,
                 "n_clean": clean,
             }
@@ -257,9 +262,6 @@ class Scores:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "median_latency_s": round(statistics.median(self.latencies), 4) if self.latencies else 0.0,
-            "recall_by_rule": {
-                rule: round(hit / total, 4) for rule, (hit, total) in sorted(self.per_rule.items()) if total
-            },
             "by_rule": self.by_rule(),
             "recall_by_novel": {
                 novel: round(hit / total, 4) for novel, (hit, total) in sorted(self.per_novel.items()) if total
@@ -745,9 +747,9 @@ class VerdictPredictor:
     sampling = {}
 
     def __init__(self, model, effort="high", max_tokens=2000, rates=None, question=None):
+        self.model = model
         import pipeline
 
-        self.model = model
         self.question = question or pipeline.DEFAULT_QUESTION
         self._verifier = None
         self.effort = effort
@@ -1512,6 +1514,17 @@ def write_results(name, corpus, items, scores, extra=None, kind="attack", partia
     return path, payload
 
 
+NAME_COLUMN = 22
+
+
+def print_by_rule(summary, indent="  "):
+    """One format for the per-rule rows, used by every command that prints them."""
+    for rule, stats in summary.get("by_rule", {}).items():
+        low, high = stats["youden_j_ci95"]
+        print(f"{indent}{rule:20} J {stats['youden_j']:+.3f} [{low:+.3f},{high:+.3f}] "
+              f"recall {stats['recall']:.3f} FPR {stats['fpr']:.3f} n={stats['n_injected']}")
+
+
 def print_row(name, summary):
     lo, hi = summary["youden_j_ci95"]
     mark = {
@@ -1520,7 +1533,7 @@ def print_row(name, summary):
         "inconclusive": "  (inconclusive, CI too wide)",
     }[summary["youden_j_verdict"]]
     print(
-        f"{name:22} J {summary['youden_j']:+.3f} [{lo:+.3f},{hi:+.3f}]  "
+        f"{name:{NAME_COLUMN}} J {summary['youden_j']:+.3f} [{lo:+.3f},{hi:+.3f}]  "
         f"F1 {summary['f1']:.3f}  R {summary['recall']:.3f}  "
         f"FPR {summary['false_positive_rate']:.3f}  loc {summary['localization']:.3f}  "
         f"${summary['cost_usd']:.4f}{mark}"
@@ -1608,10 +1621,7 @@ def cmd_run(args):
                                   partial=bool(args.limit))
     print_row(name, payload)
     print("by rule (each against its own matched controls):")
-    for rule, stats in payload.get("by_rule", {}).items():
-        lo, hi = stats["youden_j_ci95"]
-        print(f"  {rule:20} J {stats['youden_j']:+.3f} [{lo:+.3f},{hi:+.3f}] "
-              f"recall {stats['recall']:.3f} FPR {stats['fpr']:.3f} n={stats['n_injected']}")
+    print_by_rule(payload)
     if failures:
         print(f"WARNING {failures} response(s) failed to parse and were counted as 'no error'")
         for note in getattr(predict, "parse_failure_notes", [])[:3]:
@@ -1640,7 +1650,7 @@ def cmd_attack(args):
         scores = score(items, predict)
         _, payload = write_results(name, args.corpus, items, scores, kind=predict.kind)
         print_row(name, payload)
-        print(f"{'':22} by rule: {payload['recall_by_rule']}")
+        print_by_rule(payload, indent=" " * (NAME_COLUMN + 1))
         if predict.kind != "diagnostic" and payload["youden_j"] > best:
             best, winner = payload["youden_j"], name
     print(
@@ -1663,7 +1673,7 @@ def cmd_list(args):
         key = " (needs API key)" if predict.needs_key else ""
         doc = (predict.__doc__ or "").strip().splitlines()[0]
         doc = doc if len(doc) < 100 else doc[:97] + "..."
-        print(f"{name:22} [{predict.kind}]{key}  {doc}")
+        print(f"{name:{NAME_COLUMN}} [{predict.kind}]{key}  {doc}")
     return 0
 
 

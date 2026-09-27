@@ -34,12 +34,6 @@
   "input_tokens": 0,
   "output_tokens": 0,
   "median_latency_s": 0.0002,
-  "recall_by_rule": {
-    "character_swap": 0.4318,
-    "state_trait_flip": 0.566,
-    "timeline_weekday": 0.6667,
-    "trait_flip": 0.6667
-  },
   "by_rule": {
     "character_swap": {
       "recall": 0.4318,

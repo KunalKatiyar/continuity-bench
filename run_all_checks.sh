@@ -11,10 +11,12 @@ PY=python3
 [ -x .venv/bin/python ] && PY=.venv/bin/python
 echo "using $("$PY" --version) at $PY"
 
+# build first: the corpus guards in test_regression.py skip when there is no corpus,
+# and a fresh clone is exactly the run where a bad corpus would first ship
+"$PY" bench.py build >/dev/null
 for suite in test_*.py; do
     "$PY" "$suite"
 done
-"$PY" bench.py build >/dev/null
 "$PY" bench.py validate
 "$PY" evaluate.py attack
 "$PY" build_site.py

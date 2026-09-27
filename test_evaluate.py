@@ -93,7 +93,10 @@ def test_recall_is_broken_out_by_rule_and_novel():
     flags = iter([True, False])
     scores = evaluate.score(items, lambda i: evaluate.Prediction(next(flags), 3))
     summary = scores.summary()
-    assert summary["recall_by_rule"] == {"character_swap": 1.0, "trait_flip": 0.0}
+    assert {rule: stats["recall"] for rule, stats in summary["by_rule"].items()} == {
+        "character_swap": 1.0,
+        "trait_flip": 0.0,
+    }
     assert summary["recall_by_novel"] == {"pgA": 1.0, "pgB": 0.0}
 
 
