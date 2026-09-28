@@ -166,11 +166,17 @@ def test_confidence_still_produces_an_auc():
 
 
 def test_every_predictor_still_declares_a_kind_and_key_need():
-    """A model landing in the heuristic suite made `attack` a 58-minute run once."""
+    """A model landing in the heuristic suite made `attack` a 58-minute run once.
+
+    Kinds are checked against the leaderboard's own table, because a kind the site
+    cannot render is a KeyError at publish time, not a smaller problem.
+    """
+    import build_site
+
     evaluate = _evaluate()
 
     for name, predict in evaluate.PREDICTORS.items():
-        assert predict.kind in ("model", "attack", "floor", "diagnostic", "human"), name
+        assert predict.kind in build_site.KINDS, name
         assert isinstance(predict.needs_key, bool), name
         if predict.kind in evaluate.HEURISTIC_KINDS:
             assert predict.needs_key is False, name

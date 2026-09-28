@@ -4,7 +4,9 @@ I've been building a benchmark for continuity errors in fiction — the kind whe
 character's eyes change colour between chapters, or someone walks into a room they
 were never in. Then an editing pipeline that tries to catch them cheaply.
 
-Nothing works yet. That's most of what I have to report, and it's the interesting part.
+For a long time nothing worked, and the reason turned out to be the question I was
+asking rather than the models I was asking it of. Changing the framing took the same
+8B model from J 0.000 to J +0.264 — the first interval on the board that excludes zero.
 
 ## The bet
 
@@ -119,6 +121,10 @@ The middle row is the finding. With an llama-extracted state the gate fires on
 a different bug with a different fix, and I had been reporting it as "the pipeline
 finds nothing".
 
+(I later had to walk half of this back. Recall tripling from a better state is not the
+same as discrimination improving, and once the false-positive rate is counted the gate
+is the binding constraint for a 421M model. See *The framing was the problem* below.)
+
 Then I nearly published a much worse claim. My first oracle listed only characters
 mentioned twice or more, while asserting "the **only** characters present are…". That
 claim was false in 266 of 272 clean passages — someone mentioned once was silently
@@ -202,9 +208,50 @@ unique.
 The cost is a smaller corpus: 147 pairs, down from 242. Validity over volume, but it is
 thin, and I would want more trait families before quoting a headline from it.
 
+## The framing was the problem, not the model
+
+Every number above came from asking one question: *here is a passage, does it contain a
+continuity error?* Under that framing llama3.1:8b answers yes to 98% of passages —
+recall 0.981, false-positive rate 0.981, J exactly 0.000 with a tight interval. It is
+`always_error` with a GPU bill.
+
+Then I asked the same model a different question: *here is one paragraph and here is the
+story state, does this paragraph contradict it?*
+
+| gate model | framing | J | 95% CI |
+|---|---|---|---|
+| llama3.1 **8B** | whole passage, no state | +0.000 | [−0.061, +0.061] |
+| llama3.1 **8B** | per-paragraph vs state | **+0.264** | **[+0.075, +0.435]** |
+| Laya **421M** | extracted state | +0.019 | [−0.139, +0.176] |
+| Laya **421M** | per-paragraph vs state | +0.066 | [−0.116, +0.243] |
+
+Same model, same corpus, same items. The decomposition is the whole difference. On
+`state_trait_flip`, the rule built for state-anchored errors, it reaches **J +0.474
+[+0.169, +0.692]** at recall 0.632 and FPR 0.158 — and that is an operating point worth
+having, because it beats the floor that actually matters.
+
+**The floor that matters is random sampling.** A gate that escalates X% of paragraphs to
+an LLM costs X% and, if it is choosing at random, catches X% of the errors. Any gate has
+to beat that line to justify existing. Laya escalates 23% and catches 24% — exactly the
+sampling line, so it buys nothing. The 8B gate escalates ~40% and catches 63%.
+
+Two caveats I will not bury. That gate is fed a **hand-built** state, so it is the
+architecture's ceiling, not a runnable pipeline; the number that matters next is how
+much survives machine extraction. And it took an 8B model — Laya at 421M cannot do this
+even when handed the same perfect state, which kills the "tiny non-generative classifier"
+version of the pitch unless Jev is very different from Laya.
+
+That last point is the one I would have gotten wrong without the ablation. Earlier in
+this project I concluded that state *extraction* was the bottleneck, because giving Laya
+a better state tripled its recall. It also tripled its false-positive rate. Recall alone
+said the state was the problem; J said the gate was.
+
 ## What I don't know yet
 
-Whether a careful human can solve these items at all.
+**How much of that +0.264 survives real state extraction.** The ceiling is measured; the
+pipeline is not. That run is queued.
+
+**Whether a careful human can solve these items at all.**
 
 That's the fork everything hangs on. If a human scores well, the models are genuinely
 bad and the benchmark is sound. If a human scores near chance, the items are unfair and

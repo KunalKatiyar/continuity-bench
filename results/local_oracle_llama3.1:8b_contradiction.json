@@ -1,0 +1,115 @@
+{
+  "predictor": "local_oracle_llama3.1:8b_contradiction",
+  "kind": "ceiling",
+  "corpus": "continuity_v0.jsonl",
+  "items": 212,
+  "pairs": 106,
+  "novels": 23,
+  "model": "llama3.1:8b",
+  "effort": "high",
+  "question": "contradiction",
+  "precision": 0.6228,
+  "recall": 0.6698,
+  "f1": 0.6455,
+  "youden_j": 0.2642,
+  "youden_j_ci95": [
+    0.0749,
+    0.4349
+  ],
+  "youden_j_significant": true,
+  "youden_j_verdict": "effect",
+  "roc_auc": 0.6387,
+  "paragraph_youden_j": 0.3473,
+  "paragraph_recall": 0.434,
+  "paragraph_fpr": 0.0867,
+  "paragraphs_judged": 2298,
+  "recall_ci95": [
+    0.5757,
+    0.752
+  ],
+  "fpr_ci95": [
+    0.3171,
+    0.5008
+  ],
+  "false_positive_rate": 0.4057,
+  "localization": 0.4366,
+  "true_positive": 71,
+  "false_positive": 43,
+  "true_negative": 63,
+  "false_negative": 35,
+  "cost_usd": 0.0,
+  "input_tokens": 394086,
+  "output_tokens": 0,
+  "median_latency_s": 25.4932,
+  "by_rule": {
+    "character_swap": {
+      "recall": 0.6719,
+      "fpr": 0.5156,
+      "youden_j": 0.1562,
+      "youden_j_ci95": [
+        -0.0837,
+        0.3785
+      ],
+      "n_injected": 64,
+      "n_clean": 64
+    },
+    "state_trait_flip": {
+      "recall": 0.6316,
+      "fpr": 0.1579,
+      "youden_j": 0.4737,
+      "youden_j_ci95": [
+        0.1687,
+        0.6917
+      ],
+      "n_injected": 38,
+      "n_clean": 38
+    },
+    "timeline_weekday": {
+      "recall": 1.0,
+      "fpr": 1.0,
+      "youden_j": 0.0,
+      "youden_j_ci95": [
+        -0.7935,
+        0.7935
+      ],
+      "n_injected": 1,
+      "n_clean": 1
+    },
+    "trait_flip": {
+      "recall": 1.0,
+      "fpr": 1.0,
+      "youden_j": 0.0,
+      "youden_j_ci95": [
+        -0.5615,
+        0.5615
+      ],
+      "n_injected": 3,
+      "n_clean": 3
+    }
+  },
+  "recall_by_novel": {
+    "pg1023": 0.4,
+    "pg120": 0.5,
+    "pg121": 0.6667,
+    "pg1260": 0.75,
+    "pg1342": 1.0,
+    "pg1400": 1.0,
+    "pg155": 1.0,
+    "pg158": 1.0,
+    "pg1661": 1.0,
+    "pg174": 1.0,
+    "pg2701": 0.3333,
+    "pg271": 0.875,
+    "pg2852": 0.75,
+    "pg35": 1.0,
+    "pg43": 0.5,
+    "pg514": 0.8333,
+    "pg583": 0.5,
+    "pg74": 0.3333,
+    "pg76": 0.2,
+    "pg766": 0.8571,
+    "pg768": 0.5,
+    "pg84": 0.5,
+    "pg98": 0.3333
+  }
+}

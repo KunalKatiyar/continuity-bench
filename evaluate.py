@@ -1433,8 +1433,8 @@ class LocalOraclePredictor(OracleGatePredictor):
         return pipeline.LocalVerifier(self.model, question=self.question)
 
 
-predictor("laya_oracle", kind="model", needs_key=False)(LayaOraclePredictor())
-predictor("local_oracle", kind="model", needs_key=False)(LocalOraclePredictor())
+predictor("laya_oracle", kind="ceiling", needs_key=False)(LayaOraclePredictor())
+predictor("local_oracle", kind="ceiling", needs_key=False)(LocalOraclePredictor())
 
 
 

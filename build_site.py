@@ -47,6 +47,7 @@ KINDS = {
     "model": ("Model", "#2a78d6", "#3987e5"),
     "attack": ("Free heuristic", "#eb6834", "#d95926"),
     "diagnostic": ("Integrity check", "#1baf7a", "#199e70"),
+    "ceiling": ("Upper bound", "#b8892c", "#d7a53c"),
     "floor": ("Trivial floor", "#898781", "#898781"),
     "human": ("Human reader", "#4a3aa7", "#9085e9"),
 }
@@ -528,14 +529,43 @@ def hero(rows):
     jev = jev_row(rows)
     models = [r for r in rows if r["kind"] == "model"]
     if jev is None:
-        body = (
+        body = [
             '<p class="hero-claim">Can a cheap non-generative classifier, escalating to an '
             "LLM only when unsure, match full-context LLM accuracy on continuity errors "
-            "for a fraction of the cost?</p>"
-            '<p class="hero-status">Not yet measured. No Jev run has been recorded, so '
-            "there is no number here to read. The baselines below are what exists.</p>"
-        )
-        return f'<section class="hero pending"><h2>The question</h2>{body}</section>'
+            "for a fraction of the cost?</p>",
+            '<p class="hero-status">Not measured for Jev itself: no Jev run has been '
+            "recorded, so no number on this page is Jev&rsquo;s.</p>",
+        ]
+        # a stand-in in Jev's slot cannot answer the vendor question, but it does answer
+        # the prior one: whether this architecture discriminates at all. Ceilings are
+        # reported here because that prior question is what they exist to settle - with
+        # the caveat stated, since a ceiling is handed state no deployed system has
+        proven = [
+            r
+            for r in rows
+            if r["kind"] in ("model", "ceiling") and r["youden_j_ci95"][0] > 0
+        ]
+        if proven:
+            best = max(proven, key=lambda r: r["youden_j"])
+            lo, hi = best["youden_j_ci95"]
+            caveat = (
+                " That run is handed a hand-built state, so it is the architecture&rsquo;s "
+                "ceiling rather than a runnable pipeline."
+                if best["kind"] == "ceiling"
+                else ""
+            )
+            body.append(
+                f'<div class="hero-number">J {best["youden_j"]:+.3f}'
+                f'<span class="hero-ci">95% CI {lo:+.3f} to {hi:+.3f}</span></div>'
+            )
+            body.append(
+                '<p class="hero-status">What <em>is</em> measured: with a stand-in in '
+                f'Jev&rsquo;s slot, {esc(best["predictor"])} clears zero &mdash; the only '
+                f"interval on this board that excludes it.{caveat} Whether Jev clears it "
+                "is a separate question, and an unrun one.</p>"
+            )
+        joined = "".join(body)
+        return f'<section class="hero pending"><h2>The question</h2>{joined}</section>'
     best_model = max(
         (r for r in models if not r["predictor"].startswith(JEV_PREFIX)),
         key=lambda r: r["youden_j"],
@@ -673,20 +703,24 @@ rate is measured on the same text distribution as the recall.</p>
 
 
 CONTENDER_KINDS = ("model", "floor", "human")
-INTEGRITY_KINDS = ("attack", "diagnostic")
+# a ceiling is fed something a deployed system would not have, so it is not a contender
+# for the same reason a diagnostic is not: it answers "could this work at best", not
+# "does this work"
+INTEGRITY_KINDS = ("attack", "diagnostic", "ceiling")
 
 
 def integrity_section(rows):
-    """Attacks and diagnostics, kept out of the leaderboard proper.
+    """Attacks, diagnostics and ceilings, kept out of the leaderboard proper.
 
-    These are not contenders: they are the checks that decide whether the leaderboard
-    is worth reading, and a diagnostic that exploits the release format would otherwise
-    sit at the top of it.
+    None of these are contenders. Attacks and diagnostics decide whether the leaderboard
+    is worth reading, and a ceiling is handed information a deployed system would not
+    have. All three would otherwise sit at the top of a board they are not competing on.
     """
     if not rows:
         return ""
     attacks = [r["youden_j"] for r in rows if r["kind"] == "attack"]
     diagnostics = [r for r in rows if r["kind"] == "diagnostic"]
+    ceilings = [r for r in rows if r["kind"] == "ceiling"]
     lead = []
     if attacks:
         lead.append(
@@ -700,6 +734,14 @@ def integrity_section(rows):
             f'{esc(worst["predictor"])} reaches J {worst["youden_j"]:+.3f} by diffing the two '
             "halves of a matched pair. That is why the published test split ships one half "
             "of each pair and holds its labels back."
+        )
+    if ceilings:
+        best = max(ceilings, key=lambda r: r["youden_j"])
+        lead.append(
+            f'The ceilings are fed a hand-built story state instead of one the pipeline '
+            f'extracted: {esc(best["predictor"])} reaches J {best["youden_j"]:+.3f} that way. '
+            "They bound what the architecture could do given perfect state, which is not "
+            "what a deployed system has, so they are reported here rather than ranked."
         )
     return (
         '<section class="method"><h2>Benchmark integrity</h2>'
