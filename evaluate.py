@@ -653,6 +653,9 @@ VERDICT_PROPERTIES = {
     "paragraph_index": {"type": "integer"},
     "reason": {"type": "string"},
 }
+# the one key that carries the yes/no, read back by both the detection path and the
+# escalation path so a rename cannot leave one of them silently answering False
+VERDICT_KEY = "has_error"
 VERDICT_JSON_SCHEMA = {
     "type": "object",
     "properties": VERDICT_PROPERTIES,
@@ -745,6 +748,26 @@ class VerdictPredictor:
     provider = "unset"
 
     sampling = {}
+
+    def read_verdict(self, payload, index):
+        """An EscalationVerdict, or None when the model did not answer the question asked.
+
+        Escalation reuses the detection schema, so it reads that schema's own keys.
+        Asking for a key the schema forbids - `additionalProperties` is False - made
+        every escalation parse cleanly and come back False, which looks exactly like a
+        working pipeline that finds nothing. That cost a wrong published conclusion, so
+        a missing key is now a counted failure rather than a silent no.
+        """
+        import pipeline
+
+        if VERDICT_KEY not in payload:
+            self.parse_failures += 1
+            return None
+        return pipeline.EscalationVerdict(
+            is_real_contradiction=bool(payload[VERDICT_KEY]),
+            paragraph_index=int(payload.get("paragraph_index", index)),
+            explanation=str(payload.get("reason", "")),
+        )
 
     def __init__(self, model, effort="high", max_tokens=2000, rates=None, question=None):
         self.model = model
@@ -1032,6 +1055,7 @@ class JevHybridPredictor(VerdictPredictor):
         self._verifier = None
         self._helper = None
         self.escalations = 0
+        self.confirmations = 0
         self.paragraphs_checked = 0
 
     def make_verifier(self):
@@ -1069,11 +1093,7 @@ class JevHybridPredictor(VerdictPredictor):
         except json.JSONDecodeError:
             self.parse_failures += 1
             return None
-        return pipeline.EscalationVerdict(
-            is_real_contradiction=bool(payload.get("is_real_contradiction")),
-            paragraph_index=int(payload.get("paragraph_index", index)),
-            explanation=str(payload.get("explanation", "")),
-        )
+        return self.read_verdict(payload, index)
 
     def __call__(self, item):
         import pipeline
@@ -1098,6 +1118,7 @@ class JevHybridPredictor(VerdictPredictor):
         self.escalations += result.escalations
         self.paragraphs_checked += result.paragraphs_checked
         confirmed = result.confirmed
+        self.confirmations += len(confirmed)
         flagged = {finding.paragraph_index for finding in confirmed}
         jev_tokens = verifier.input_tokens - before_tokens
         return Prediction(
@@ -1146,6 +1167,7 @@ class HybridLocalPredictor(VerdictPredictor):
         self._verifier = None
         self._helper = None
         self.escalations = 0
+        self.confirmations = 0
         self.paragraphs_checked = 0
         self.gate_input_tokens = 0
 
@@ -1178,11 +1200,7 @@ class HybridLocalPredictor(VerdictPredictor):
         except json.JSONDecodeError:
             self.parse_failures += 1
             return None
-        return pipeline.EscalationVerdict(
-            is_real_contradiction=bool(payload.get("is_real_contradiction")),
-            paragraph_index=int(payload.get("paragraph_index", index)),
-            explanation=str(payload.get("explanation", "")),
-        )
+        return self.read_verdict(payload, index)
 
     def __call__(self, item):
         import pipeline
@@ -1201,6 +1219,7 @@ class HybridLocalPredictor(VerdictPredictor):
         self.paragraphs_checked += result.paragraphs_checked
         self.gate_input_tokens += verifier.input_tokens - before
         confirmed = result.confirmed
+        self.confirmations += len(confirmed)
         flagged = {finding.paragraph_index for finding in confirmed}
         return Prediction(
             has_error=bool(confirmed),
@@ -1599,6 +1618,7 @@ def cmd_run(args):
     if getattr(predict, "paragraphs_checked", 0):
         extra["paragraphs_checked"] = predict.paragraphs_checked
         extra["escalations"] = predict.escalations
+        extra["confirmations"] = getattr(predict, "confirmations", 0)
         extra["escalation_rate"] = round(
             predict.escalations / predict.paragraphs_checked, 4
         )
@@ -1613,15 +1633,19 @@ def cmd_run(args):
             )
     failures = getattr(predict, "parse_failures", 0)
     api_failures = getattr(predict, "api_failures", 0)
-    if failures:
-        extra["parse_failures"] = failures
-    if api_failures:
-        extra["api_failures"] = api_failures
+    extra["parse_failures"] = failures
+    extra["api_failures"] = api_failures
     path, payload = write_results(name, args.corpus, items, scores, extra, predict.kind,
                                   partial=bool(args.limit))
     print_row(name, payload)
     print("by rule (each against its own matched controls):")
     print_by_rule(payload)
+    escalations = getattr(predict, "escalations", 0)
+    if escalations and not getattr(predict, "confirmations", 0):
+        print(
+            f"WARNING the gate escalated {escalations} paragraph(s) and the verifier "
+            "confirmed none of them - check the escalation stage before reading this row"
+        )
     if failures:
         print(f"WARNING {failures} response(s) failed to parse and were counted as 'no error'")
         for note in getattr(predict, "parse_failure_notes", [])[:3]:

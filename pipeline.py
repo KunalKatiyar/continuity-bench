@@ -145,7 +145,12 @@ Flagged paragraph (index {index}):
 Full passage for context:
 {text}
 
-Answer with is_real_contradiction, paragraph_index, and explanation."""
+Answer with is_real_contradiction, paragraph_index, and explanation.
+
+The reply is emitted under the shared verdict schema, so those arrive as has_error and
+reason. Do not rename them here: asking for has_error in this prompt makes llama3.1:8b
+answer false on every escalation, including a flat colour contradiction, while asking
+for is_real_contradiction gets both directions right. Measured 2026-09-29."""
 
 
 @dataclass

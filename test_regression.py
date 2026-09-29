@@ -182,6 +182,30 @@ def test_every_predictor_still_declares_a_kind_and_key_need():
             assert predict.needs_key is False, name
 
 
+def test_the_escalation_reads_the_key_the_schema_actually_enforces():
+    """A silent False on every escalation is indistinguishable from finding nothing.
+
+    The escalation call reuses the detection schema, whose additionalProperties is
+    False, so a parser reading any other key gets None, coerces it to "no", and the
+    whole hybrid scores a clean zero with nothing in the logs. That happened, and the
+    zero was published as evidence that state extraction was the bottleneck.
+    """
+    evaluate = _evaluate()
+
+    assert evaluate.VERDICT_KEY in evaluate.VERDICT_PROPERTIES
+    assert evaluate.VERDICT_JSON_SCHEMA["additionalProperties"] is False
+
+    predictor = evaluate.PREDICTORS["hybrid_local"]
+    before = predictor.parse_failures
+    schema_shaped = {evaluate.VERDICT_KEY: True, "paragraph_index": 3, "reason": "r"}
+    verdict = predictor.read_verdict(schema_shaped, 3)
+    assert verdict is not None and verdict.is_real_contradiction is True
+    assert predictor.parse_failures == before
+
+    assert predictor.read_verdict({"some_other_key": True}, 3) is None
+    assert predictor.parse_failures == before + 1, "a key the schema forbids must count"
+
+
 def test_state_anchored_items_are_unsolvable_without_their_state():
     """The rule's premise: the contradicted fact is not in the passage.
 
